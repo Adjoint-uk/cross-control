@@ -1,0 +1,28 @@
+# cross-control example configuration
+# Copy to ~/.config/cross-control/config.toml and adjust to your setup.
+
+[daemon]
+port = 24800
+bind = "0.0.0.0"
+discovery = true
+log_level = "info"
+
+[identity]
+name = "workstation-left"
+
+[input]
+# Hotkey to release all grabbed devices and return control to local machine.
+release_hotkey = ["LeftCtrl", "LeftShift", "Escape"]
+
+[clipboard]
+enabled = true
+max_size = 10485760  # 10 MiB
+
+# Define remote screens and their position relative to this machine.
+# You can have multiple [[screens]] entries for multi-machine setups.
+
+[[screens]]
+name = "laptop-right"
+address = "192.168.1.42"
+position = "Right"
+fingerprint = "SHA256:ab:cd:ef:..."  # Set after first pairing

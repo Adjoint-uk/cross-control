@@ -1,0 +1,26 @@
+[package]
+name = "cross-control-cli"
+description = "Command-line interface for cross-control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "cross-control"
+path = "src/main.rs"
+
+[dependencies]
+cross-control-daemon = { workspace = true }
+cross-control-certgen = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+hostname = "0.4"
+
+[lints]
+workspace = true

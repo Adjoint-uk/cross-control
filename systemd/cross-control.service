@@ -1,0 +1,15 @@
+[Unit]
+Description=cross-control virtual KVM daemon
+Documentation=https://github.com/Adjoint-uk/cross-control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/cross-control start
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

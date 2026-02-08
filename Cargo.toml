@@ -1,0 +1,88 @@
+[workspace]
+members = [
+    "crates/cross-control-types",
+    "crates/cross-control-protocol",
+    "crates/cross-control-input",
+    "crates/cross-control-clipboard",
+    "crates/cross-control-discovery",
+    "crates/cross-control-daemon",
+    "crates/cross-control-cli",
+    "crates/cross-control-certgen",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Adjoint-uk/cross-control"
+homepage = "https://github.com/Adjoint-uk/cross-control"
+authors = ["Adjoint Ltd <hello@adjoint.uk>"]
+
+[workspace.dependencies]
+# Shared types
+cross-control-types = { path = "crates/cross-control-types" }
+cross-control-protocol = { path = "crates/cross-control-protocol" }
+cross-control-input = { path = "crates/cross-control-input" }
+cross-control-clipboard = { path = "crates/cross-control-clipboard" }
+cross-control-discovery = { path = "crates/cross-control-discovery" }
+cross-control-daemon = { path = "crates/cross-control-daemon" }
+cross-control-certgen = { path = "crates/cross-control-certgen" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# QUIC transport
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2", features = ["serde"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Certificate generation
+rcgen = "0.13"
+
+# Clipboard
+arboard = "3"
+
+# mDNS discovery
+mdns-sd = "0.13"
+
+# Configuration
+toml = "0.8"
+
+# Async trait
+async-trait = "0.1"
+
+# UUID for machine IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Allow common patterns
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
