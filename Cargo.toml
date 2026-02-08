@@ -70,6 +70,18 @@ async-trait = "0.1"
 # UUID for machine IDs
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Linux input
+evdev = { version = "0.13", features = ["tokio"] }
+
+# Crypto
+ring = "0.17"
+
+# PEM parsing
+rustls-pemfile = "2"
+
+# Filesystem paths
+dirs = "5"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 

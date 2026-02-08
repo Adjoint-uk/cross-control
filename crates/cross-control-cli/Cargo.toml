@@ -12,9 +12,16 @@ authors.workspace = true
 name = "cross-control"
 path = "src/main.rs"
 
+[features]
+default = ["linux"]
+linux = ["cross-control-daemon/linux"]
+
 [dependencies]
 cross-control-daemon = { workspace = true }
 cross-control-certgen = { workspace = true }
+cross-control-input = { workspace = true }
+cross-control-protocol = { workspace = true }
+cross-control-types = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

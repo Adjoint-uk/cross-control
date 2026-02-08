@@ -12,6 +12,9 @@ use tokio::sync::mpsc;
 
 pub mod error;
 
+#[cfg(feature = "linux")]
+pub mod linux;
+
 pub use error::InputError;
 
 /// Captures physical input devices and detects barrier crossings.

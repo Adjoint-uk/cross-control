@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+linux = ["evdev"]
+
 [dependencies]
 cross-control-types = { workspace = true }
 tokio = { workspace = true }
@@ -15,6 +18,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+evdev = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -29,6 +29,10 @@ pub struct DaemonConfig {
     pub discovery: bool,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    #[serde(default = "default_screen_width")]
+    pub screen_width: u32,
+    #[serde(default = "default_screen_height")]
+    pub screen_height: u32,
 }
 
 impl Default for DaemonConfig {
@@ -38,6 +42,8 @@ impl Default for DaemonConfig {
             bind: default_bind(),
             discovery: true,
             log_level: default_log_level(),
+            screen_width: default_screen_width(),
+            screen_height: default_screen_height(),
         }
     }
 }
@@ -134,6 +140,14 @@ fn default_release_hotkey() -> Vec<String> {
 
 fn default_max_clipboard_size() -> usize {
     10 * 1024 * 1024 // 10 MiB
+}
+
+fn default_screen_width() -> u32 {
+    1920
+}
+
+fn default_screen_height() -> u32 {
+    1080
 }
 
 #[cfg(test)]

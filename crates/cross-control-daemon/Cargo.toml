@@ -8,18 +8,24 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+linux = ["cross-control-input/linux"]
+
 [dependencies]
 cross-control-types = { workspace = true }
 cross-control-protocol = { workspace = true }
 cross-control-input = { workspace = true }
 cross-control-clipboard = { workspace = true }
 cross-control-discovery = { workspace = true }
+cross-control-certgen = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+dirs = { workspace = true }
+uuid = { workspace = true }
 hostname = "0.4"
 
 [dev-dependencies]

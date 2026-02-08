@@ -65,25 +65,13 @@ pub fn generate_certificate(hostname: &str) -> Result<GeneratedCert, CertgenErro
 /// Compute SHA-256 fingerprint of DER-encoded certificate bytes.
 fn sha256_fingerprint(der: &[u8]) -> String {
     use std::fmt::Write;
-    // Simple SHA-256 using ring (pulled in via rustls/quinn dependency chain)
-    // For Phase 0 we use a basic approach
-    let digest = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        // Placeholder: in production this will use ring::digest::SHA256
-        // For now we create a hex representation for the scaffold
-        let mut hasher = DefaultHasher::new();
-        der.hash(&mut hasher);
-        let h = hasher.finish();
-        format!("{h:016x}")
-    };
-
+    let digest = ring::digest::digest(&ring::digest::SHA256, der);
     let mut fingerprint = String::from("SHA256:");
-    for (i, ch) in digest.chars().enumerate() {
-        if i > 0 && i % 2 == 0 {
+    for (i, byte) in digest.as_ref().iter().enumerate() {
+        if i > 0 {
             fingerprint.push(':');
         }
-        let _ = write!(fingerprint, "{ch}");
+        let _ = write!(fingerprint, "{byte:02x}");
     }
     fingerprint
 }

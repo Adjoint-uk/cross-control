@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 rcgen = { workspace = true }
+ring = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
