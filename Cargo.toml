@@ -8,6 +8,7 @@ members = [
     "crates/cross-control-daemon",
     "crates/cross-control-cli",
     "crates/cross-control-certgen",
+    "crates/cross-control-tui-test",
 ]
 resolver = "2"
 
@@ -81,6 +82,10 @@ rustls-pemfile = "2"
 
 # Filesystem paths
 dirs = "5"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

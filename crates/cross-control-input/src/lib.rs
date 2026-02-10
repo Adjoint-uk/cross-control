@@ -15,6 +15,9 @@ pub mod error;
 #[cfg(feature = "linux")]
 pub mod linux;
 
+#[cfg(any(test, feature = "mock"))]
+pub mod mock;
+
 pub use error::InputError;
 
 /// Captures physical input devices and detects barrier crossings.

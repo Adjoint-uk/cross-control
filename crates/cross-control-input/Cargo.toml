@@ -10,6 +10,7 @@ authors.workspace = true
 
 [features]
 linux = ["evdev"]
+mock = []
 
 [dependencies]
 cross-control-types = { workspace = true }

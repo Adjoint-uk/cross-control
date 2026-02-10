@@ -9,7 +9,7 @@ use cross_control_types::{
     CapturedEvent, ControlMessage, DeviceInfo, InputEvent, InputMessage, KeyCode, MachineId,
     ScreenEdge, ScreenGeometry,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
@@ -38,6 +38,28 @@ pub enum DaemonEvent {
     Shutdown,
 }
 
+/// Observable daemon status (via watch channel).
+#[derive(Debug, Clone)]
+pub struct DaemonStatus {
+    pub controlling: Option<MachineId>,
+    pub controlled_by: Option<MachineId>,
+    pub session_count: usize,
+    pub cursor_x: i32,
+    pub cursor_y: i32,
+}
+
+impl Default for DaemonStatus {
+    fn default() -> Self {
+        Self {
+            controlling: None,
+            controlled_by: None,
+            session_count: 0,
+            cursor_x: 960,
+            cursor_y: 540,
+        }
+    }
+}
+
 /// The core cross-control daemon.
 pub struct Daemon {
     config: Config,
@@ -59,6 +81,8 @@ pub struct Daemon {
     controlled_by: Option<MachineId>,
     /// Hotkey state tracking: set of currently pressed keys.
     hotkey_pressed: Vec<KeyCode>,
+    /// Status broadcast channel.
+    status_tx: watch::Sender<DaemonStatus>,
 }
 
 impl Daemon {
@@ -72,10 +96,17 @@ impl Daemon {
     ) -> Self {
         let screen = ScreenGeometry::new(config.daemon.screen_width, config.daemon.screen_height);
         let (event_tx, event_rx) = mpsc::channel(1024);
+        let cursor_x = i32::try_from(screen.width / 2).unwrap_or(960);
+        let cursor_y = i32::try_from(screen.height / 2).unwrap_or(540);
+        let (status_tx, _) = watch::channel(DaemonStatus {
+            cursor_x,
+            cursor_y,
+            ..DaemonStatus::default()
+        });
 
         Self {
-            cursor_x: i32::try_from(screen.width / 2).unwrap_or(960),
-            cursor_y: i32::try_from(screen.height / 2).unwrap_or(540),
+            cursor_x,
+            cursor_y,
             config,
             machine_id,
             screen,
@@ -89,12 +120,18 @@ impl Daemon {
             controlling: None,
             controlled_by: None,
             hotkey_pressed: Vec::new(),
+            status_tx,
         }
     }
 
     /// Get a clone of the event sender for feeding events into the daemon.
     pub fn event_sender(&self) -> mpsc::Sender<DaemonEvent> {
         self.event_tx.clone()
+    }
+
+    /// Get a status watch receiver for observing daemon state changes.
+    pub fn status_receiver(&self) -> watch::Receiver<DaemonStatus> {
+        self.status_tx.subscribe()
     }
 
     /// Run the daemon event loop.
@@ -153,6 +190,7 @@ impl Daemon {
         }
 
         info!("daemon running");
+        self.broadcast_status();
 
         // Main event loop
         loop {
@@ -195,11 +233,22 @@ impl Daemon {
                             }
                         }
                     }
+                    self.broadcast_status();
                 }
             }
         }
 
         self.shutdown().await
+    }
+
+    fn broadcast_status(&self) {
+        let _ = self.status_tx.send(DaemonStatus {
+            controlling: self.controlling,
+            controlled_by: self.controlled_by,
+            session_count: self.sessions.len(),
+            cursor_x: self.cursor_x,
+            cursor_y: self.cursor_y,
+        });
     }
 
     async fn setup_outbound_session(
@@ -220,10 +269,11 @@ impl Daemon {
         let peer_id = session.machine_id;
         let peer_name = session.name.clone();
 
-        // Spawn control message reader
+        self.sessions.insert(peer_id, session);
+
+        // Spawn control message reader (must be after insert so we can get the rx)
         self.spawn_control_reader(peer_id);
 
-        self.sessions.insert(peer_id, session);
         info!(peer = %peer_name, id = %peer_id, "outbound session established");
         Ok(())
     }
@@ -250,23 +300,100 @@ impl Daemon {
 
         self.sessions.insert(peer_id, session);
 
-        // Spawn control message reader
+        // Spawn control message reader (must be after insert)
         self.spawn_control_reader(peer_id);
 
         info!(peer = %peer_name, id = %peer_id, "inbound session established");
         Ok(())
     }
 
-    fn spawn_control_reader(&self, peer_id: MachineId) {
-        // NOTE: We can't read from the session's control_rx here since it's
-        // owned by the PeerSession. The reading happens in handle_peer_control
-        // which is driven by the daemon calling recv on the session. For MVP,
-        // we spawn a task that periodically polls.
+    fn spawn_control_reader(&mut self, peer_id: MachineId) {
+        let mut control_rx = self
+            .sessions
+            .get_mut(&peer_id)
+            .and_then(PeerSession::take_control_rx)
+            .expect("control_rx should exist after handshake");
         let event_tx = self.event_tx.clone();
         tokio::spawn(async move {
-            // The actual reading is done in the main loop via poll_sessions
-            // For now, this task just ensures the peer_id is tracked
-            let _ = (event_tx, peer_id);
+            loop {
+                match control_rx.recv::<ControlMessage>().await {
+                    Ok(Some(msg)) => {
+                        if event_tx
+                            .send(DaemonEvent::PeerControl {
+                                machine_id: peer_id,
+                                msg,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        // Stream closed cleanly
+                        let _ = event_tx.send(DaemonEvent::PeerDisconnected(peer_id)).await;
+                        break;
+                    }
+                    Err(e) => {
+                        debug!(peer = %peer_id, error = %e, "control reader error");
+                        let _ = event_tx.send(DaemonEvent::PeerDisconnected(peer_id)).await;
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Accept the unidirectional input stream from the remote peer, then start
+    /// reading input messages from it. This runs as a spawned task because the
+    /// QUIC stream may not be visible to `accept_uni` until the remote sends
+    /// data on it.
+    fn spawn_accept_input_stream(&self, peer_id: MachineId) {
+        let Some(session) = self.sessions.get(&peer_id) else {
+            return;
+        };
+        let connection = session.connection.clone();
+        let event_tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            match connection.accept_input_stream().await {
+                Ok(input_rx) => {
+                    debug!(peer = %peer_id, "accepted input stream from controller");
+                    Self::spawn_input_reader_task(event_tx, input_rx, peer_id);
+                }
+                Err(e) => {
+                    warn!(peer = %peer_id, error = %e, "failed to accept input stream");
+                }
+            }
+        });
+    }
+
+    fn spawn_input_reader_task(
+        event_tx: mpsc::Sender<DaemonEvent>,
+        mut input_rx: cross_control_protocol::MessageReceiver,
+        peer_id: MachineId,
+    ) {
+        tokio::spawn(async move {
+            loop {
+                match input_rx.recv::<InputMessage>().await {
+                    Ok(Some(msg)) => {
+                        if event_tx
+                            .send(DaemonEvent::PeerInput {
+                                machine_id: peer_id,
+                                msg,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        debug!(peer = %peer_id, error = %e, "input reader error");
+                        break;
+                    }
+                }
+            }
         });
     }
 
@@ -288,6 +415,7 @@ impl Daemon {
                     timestamp_us: captured.timestamp_us,
                     events: vec![captured.event],
                 };
+                debug!(peer = %peer_id, device = ?msg.device_id, "forwarding input to peer");
                 if let Err(e) = session.send_input(&msg).await {
                     warn!(error = %e, "failed to send input to peer");
                     self.controlling = None;
@@ -342,13 +470,10 @@ impl Daemon {
         info!(peer = %peer_id, ?edge, position, "initiating control");
 
         if let Some(session) = self.sessions.get_mut(&peer_id) {
-            match session.enter(edge, position).await {
+            match session.send_enter(edge, position).await {
                 Ok(()) => {
-                    self.controlling = Some(peer_id);
-                    // Grab input devices
-                    // NOTE: grab is Linux-specific and not in the trait.
-                    // We handle this at the CLI level where we know the concrete type.
-                    info!(peer = %peer_id, "control initiated");
+                    // Don't set controlling yet — wait for EnterAck via event loop
+                    info!(peer = %peer_id, "Enter sent, awaiting EnterAck");
                 }
                 Err(e) => {
                     warn!(error = %e, "failed to initiate control");
@@ -407,12 +532,23 @@ impl Daemon {
                     match session.handle_enter().await {
                         Ok(()) => {
                             self.controlled_by = Some(machine_id);
+                            // Accept input stream asynchronously — the initiator
+                            // opened a uni stream but QUIC may not have delivered
+                            // the stream frame yet.
+                            self.spawn_accept_input_stream(machine_id);
                         }
                         Err(e) => {
                             warn!(error = %e, "failed to handle Enter");
                         }
                     }
                 }
+            }
+            ControlMessage::EnterAck => {
+                info!(peer = %machine_id, "received EnterAck");
+                if let Some(session) = self.sessions.get_mut(&machine_id) {
+                    session.set_controlling();
+                }
+                self.controlling = Some(machine_id);
             }
             ControlMessage::Leave { .. } => {
                 if let Some(session) = self.sessions.get_mut(&machine_id) {
@@ -463,7 +599,7 @@ impl Daemon {
 
     async fn handle_peer_input(&mut self, machine_id: MachineId, msg: InputMessage) {
         if self.controlled_by != Some(machine_id) {
-            warn!(peer = %machine_id, "received input from non-controlling peer");
+            warn!(peer = %machine_id, controlled_by = ?self.controlled_by, "received input from non-controlling peer");
             return;
         }
 
@@ -474,6 +610,8 @@ impl Daemon {
                         warn!(error = %e, "failed to inject event");
                     }
                 }
+            } else {
+                debug!(peer = %machine_id, device_id = ?msg.device_id, "no virtual device for input device");
             }
         }
     }

@@ -10,6 +10,7 @@ use crate::error::ProtocolError;
 use crate::wire::MAX_MESSAGE_SIZE;
 
 /// A connection to a remote cross-control peer.
+#[derive(Clone)]
 pub struct PeerConnection {
     connection: Connection,
 }

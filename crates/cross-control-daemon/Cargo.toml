@@ -10,6 +10,7 @@ authors.workspace = true
 
 [features]
 linux = ["cross-control-input/linux"]
+mock = ["cross-control-input/mock"]
 
 [dependencies]
 cross-control-types = { workspace = true }
@@ -30,6 +31,12 @@ hostname = "0.4"
 
 [dev-dependencies]
 toml = { workspace = true }
+cross-control-input = { workspace = true, features = ["mock"] }
+cross-control-certgen = { workspace = true }
+cross-control-protocol = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { workspace = true }
+rustls = { workspace = true }
 
 [lints]
 workspace = true

@@ -11,5 +11,5 @@ pub mod setup;
 pub mod state;
 
 pub use config::Config;
-pub use daemon::Daemon;
+pub use daemon::{Daemon, DaemonEvent, DaemonStatus};
 pub use error::DaemonError;

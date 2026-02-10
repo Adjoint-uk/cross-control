@@ -19,14 +19,14 @@ pub struct PeerSession {
     pub remote_screen: ScreenGeometry,
     pub state: SessionState,
     pub control_tx: MessageSender,
-    pub control_rx: MessageReceiver,
+    control_rx: Option<MessageReceiver>,
     pub input_tx: Option<MessageSender>,
-    pub input_rx: Option<MessageReceiver>,
+    input_rx: Option<MessageReceiver>,
     /// Map from remote device ID to local virtual device ID.
     pub device_map: HashMap<DeviceId, VirtualDeviceId>,
     /// Devices announced by the remote peer.
     pub remote_devices: Vec<DeviceInfo>,
-    connection: PeerConnection,
+    pub connection: PeerConnection,
 }
 
 impl PeerSession {
@@ -42,7 +42,7 @@ impl PeerSession {
             remote_screen: ScreenGeometry::new(1920, 1080),
             state: SessionState::Connected,
             control_tx,
-            control_rx,
+            control_rx: Some(control_rx),
             input_tx: None,
             input_rx: None,
             device_map: HashMap::new(),
@@ -51,7 +51,21 @@ impl PeerSession {
         }
     }
 
+    /// Take ownership of the control receiver for spawning a reader task.
+    /// Returns `None` if already taken.
+    pub fn take_control_rx(&mut self) -> Option<MessageReceiver> {
+        self.control_rx.take()
+    }
+
+    /// Take ownership of the input receiver for spawning a reader task.
+    /// Returns `None` if already taken or not yet set.
+    pub fn take_input_rx(&mut self) -> Option<MessageReceiver> {
+        self.input_rx.take()
+    }
+
     /// Perform the initiator side of the handshake: send Hello, receive Welcome.
+    ///
+    /// Must be called before `take_control_rx()` — uses the `control_rx` directly.
     pub async fn handshake_initiator(
         &mut self,
         our_id: MachineId,
@@ -68,7 +82,11 @@ impl PeerSession {
         self.state = SessionState::HelloSent;
         debug!("sent Hello");
 
-        let welcome: ControlMessage = self.control_rx.recv().await?.ok_or_else(|| {
+        let rx = self
+            .control_rx
+            .as_mut()
+            .expect("control_rx must exist during handshake");
+        let welcome: ControlMessage = rx.recv().await?.ok_or_else(|| {
             DaemonError::Protocol(cross_control_protocol::ProtocolError::StreamClosed)
         })?;
 
@@ -96,13 +114,19 @@ impl PeerSession {
     }
 
     /// Perform the responder side of the handshake: receive Hello, send Welcome.
+    ///
+    /// Must be called before `take_control_rx()` — uses the `control_rx` directly.
     pub async fn handshake_responder(
         &mut self,
         our_id: MachineId,
         our_name: &str,
         our_screen: &ScreenGeometry,
     ) -> Result<(), DaemonError> {
-        let hello: ControlMessage = self.control_rx.recv().await?.ok_or_else(|| {
+        let rx = self
+            .control_rx
+            .as_mut()
+            .expect("control_rx must exist during handshake");
+        let hello: ControlMessage = rx.recv().await?.ok_or_else(|| {
             DaemonError::Protocol(cross_control_protocol::ProtocolError::StreamClosed)
         })?;
 
@@ -147,8 +171,8 @@ impl PeerSession {
         Ok(())
     }
 
-    /// Initiate an Enter: send Enter, open input stream, await `EnterAck`.
-    pub async fn enter(
+    /// Send Enter and open input stream (non-blocking — `EnterAck` handled by event loop).
+    pub async fn send_enter(
         &mut self,
         edge: cross_control_types::ScreenEdge,
         position: u32,
@@ -162,32 +186,24 @@ impl PeerSession {
             ));
         }
 
-        let enter = ControlMessage::Enter { edge, position };
-        self.control_tx.send(&enter).await?;
-
+        // Open input stream BEFORE sending Enter so it's available when
+        // the remote calls accept_input_stream() upon receiving Enter.
         let input_tx = self.connection.open_input_stream().await?;
         self.input_tx = Some(input_tx);
 
-        // Wait for EnterAck
-        let ack: ControlMessage = self.control_rx.recv().await?.ok_or_else(|| {
-            DaemonError::Protocol(cross_control_protocol::ProtocolError::StreamClosed)
-        })?;
+        let enter = ControlMessage::Enter { edge, position };
+        self.control_tx.send(&enter).await?;
 
-        match ack {
-            ControlMessage::EnterAck => {
-                self.state = SessionState::Controlling;
-                info!(peer = %self.name, "now controlling remote");
-                Ok(())
-            }
-            other => Err(DaemonError::Protocol(
-                cross_control_protocol::ProtocolError::Handshake(format!(
-                    "expected EnterAck, got {other:?}"
-                )),
-            )),
-        }
+        // Transition state so duplicate send_enter calls are rejected
+        self.state = SessionState::Controlling;
+        debug!("sent Enter, waiting for EnterAck via event loop");
+        Ok(())
     }
 
-    /// Handle an incoming Enter from the remote peer: accept input stream, send `EnterAck`.
+    /// Handle an incoming Enter from the remote peer: send `EnterAck`.
+    ///
+    /// Sends `EnterAck` immediately. The input stream must be accepted
+    /// separately via [`accept_input_stream`] (typically spawned as a task).
     pub async fn handle_enter(&mut self) -> Result<(), DaemonError> {
         if !self.state.can_enter_controlled() {
             return Err(DaemonError::Protocol(
@@ -198,13 +214,16 @@ impl PeerSession {
             ));
         }
 
-        let input_rx = self.connection.accept_input_stream().await?;
-        self.input_rx = Some(input_rx);
-
         self.control_tx.send(&ControlMessage::EnterAck).await?;
         self.state = SessionState::Controlled;
         info!(peer = %self.name, "now being controlled by remote");
         Ok(())
+    }
+
+    /// Transition to Controlling state (called when `EnterAck` received via event loop).
+    pub fn set_controlling(&mut self) {
+        self.state = SessionState::Controlling;
+        info!(peer = %self.name, "now controlling remote");
     }
 
     /// Send Leave message and return to Idle.
@@ -236,16 +255,6 @@ impl PeerSession {
         } else {
             warn!("attempted to send input without open input stream");
             Ok(())
-        }
-    }
-
-    /// Receive input events from the remote peer.
-    pub async fn recv_input(&mut self) -> Result<Option<InputMessage>, DaemonError> {
-        if let Some(rx) = &mut self.input_rx {
-            let msg = rx.recv().await?;
-            Ok(msg)
-        } else {
-            Ok(None)
         }
     }
 
