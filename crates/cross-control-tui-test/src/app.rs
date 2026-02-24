@@ -10,42 +10,29 @@ use tokio::sync::watch;
 /// Maximum number of log lines to keep.
 const MAX_LOG_LINES: usize = 100;
 
+/// Per-screen state tracked by the TUI.
+pub struct ScreenState {
+    pub name: String,
+    pub status: watch::Receiver<DaemonStatus>,
+    pub emulation: MockEmulationHandle,
+    pub last_injected_count: usize,
+}
+
 /// Application state shared between the event loop and rendering.
 pub struct AppState {
-    pub status_a: watch::Receiver<DaemonStatus>,
-    pub status_b: watch::Receiver<DaemonStatus>,
-    #[allow(dead_code)]
-    pub emulation_a: MockEmulationHandle,
-    pub emulation_b: MockEmulationHandle,
+    pub screens: Vec<ScreenState>,
     pub log_lines: VecDeque<String>,
-    pub last_injected_count_b: usize,
     pub quit: bool,
-    /// Simulated cursor position for display (daemon A's cursor)
-    pub cursor_x: i32,
-    pub cursor_y: i32,
     pub screen_width: u32,
     pub screen_height: u32,
 }
 
 impl AppState {
-    pub fn new(
-        status_a: watch::Receiver<DaemonStatus>,
-        status_b: watch::Receiver<DaemonStatus>,
-        emulation_a: MockEmulationHandle,
-        emulation_b: MockEmulationHandle,
-        screen_width: u32,
-        screen_height: u32,
-    ) -> Self {
+    pub fn new(screens: Vec<ScreenState>, screen_width: u32, screen_height: u32) -> Self {
         Self {
-            status_a,
-            status_b,
-            emulation_a,
-            emulation_b,
+            screens,
             log_lines: VecDeque::new(),
-            last_injected_count_b: 0,
             quit: false,
-            cursor_x: i32::try_from(screen_width / 2).unwrap_or(960),
-            cursor_y: i32::try_from(screen_height / 2).unwrap_or(540),
             screen_width,
             screen_height,
         }
@@ -58,28 +45,24 @@ impl AppState {
         }
     }
 
-    /// Poll for new injected events on B's emulation and log them.
+    /// Poll for new injected events on all screens and log them.
     pub fn poll_injections(&mut self) {
-        let events = self.emulation_b.injected_events();
-        for event in events.iter().skip(self.last_injected_count_b) {
-            self.log(format!("B: Injected {:?}", event.event));
+        for screen in &mut self.screens {
+            let events = screen.emulation.injected_events();
+            for event in events.iter().skip(screen.last_injected_count) {
+                self.log_lines
+                    .push_back(format!("{}: Injected {:?}", screen.name, event.event));
+                if self.log_lines.len() > MAX_LOG_LINES {
+                    self.log_lines.pop_front();
+                }
+            }
+            screen.last_injected_count = events.len();
         }
-        self.last_injected_count_b = events.len();
     }
 
-    /// Update cursor from daemon A's status.
-    pub fn sync_cursor(&mut self) {
-        let status = self.status_a.borrow().clone();
-        self.cursor_x = status.cursor_x;
-        self.cursor_y = status.cursor_y;
-    }
-
-    pub fn status_a_snapshot(&self) -> DaemonStatus {
-        self.status_a.borrow().clone()
-    }
-
-    pub fn status_b_snapshot(&self) -> DaemonStatus {
-        self.status_b.borrow().clone()
+    /// Get a status snapshot for a screen by index.
+    pub fn status_snapshot(&self, idx: usize) -> DaemonStatus {
+        self.screens[idx].status.borrow().clone()
     }
 
     /// Tick interval for the TUI refresh.

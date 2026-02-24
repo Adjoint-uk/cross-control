@@ -78,7 +78,7 @@ async fn hello_welcome_handshake_on_loopback() {
 
     // Client side
     let client_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
-    let mut client_transport = cross_control_protocol::QuicTransport::bind(
+    let client_transport = cross_control_protocol::QuicTransport::bind(
         "127.0.0.1:0".parse().unwrap(),
         &client_cert.cert_pem,
         &client_cert.key_pem,
@@ -170,7 +170,7 @@ async fn ping_pong_roundtrip() {
     });
 
     let client_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
-    let mut client = cross_control_protocol::QuicTransport::bind(
+    let client = cross_control_protocol::QuicTransport::bind(
         "127.0.0.1:0".parse().unwrap(),
         &client_cert.cert_pem,
         &client_cert.key_pem,

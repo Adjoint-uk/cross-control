@@ -386,7 +386,7 @@ dependencies = [
  "ratatui",
  "rustls",
  "tokio",
- "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

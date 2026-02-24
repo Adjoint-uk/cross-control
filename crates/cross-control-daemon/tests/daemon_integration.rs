@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use cross_control_daemon::config::{Config, DaemonConfig, IdentityConfig, ScreenConfig};
+use cross_control_daemon::config::{Config, DaemonConfig, IdentityConfig, ScreenAdjacency, ScreenConfig};
 use cross_control_daemon::{Daemon, DaemonEvent, DaemonStatus};
 use cross_control_input::mock::{MockCapture, MockEmulation, MockEmulationHandle};
 use cross_control_types::{
@@ -519,4 +519,469 @@ async fn test_hotkey_release() {
     assert!(status_b.controlled_by.is_none());
 
     pair.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-daemon test infrastructure
+// ---------------------------------------------------------------------------
+
+/// Handles for an N-daemon test cluster.
+struct TestCluster {
+    feeds: Vec<mpsc::Sender<CapturedEvent>>,
+    statuses: Vec<watch::Receiver<DaemonStatus>>,
+    shutdowns: Vec<mpsc::Sender<DaemonEvent>>,
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl TestCluster {
+    async fn shutdown(self) {
+        for tx in &self.shutdowns {
+            let _ = tx.send(DaemonEvent::Shutdown).await;
+        }
+        for h in self.handles {
+            let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
+        }
+    }
+
+    /// Push cursor on daemon `idx` in a direction until it enters controlling state.
+    async fn push_cursor_to_edge(
+        &mut self,
+        idx: usize,
+        dx: i32,
+        dy: i32,
+    ) {
+        for _ in 0..10 {
+            let event = CapturedEvent {
+                device_id: DeviceId(2),
+                timestamp_us: 1000,
+                event: InputEvent::MouseMove { dx, dy },
+            };
+            self.feeds[idx].send(event).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+/// Descriptor for one daemon in a cluster.
+struct DaemonSpec {
+    name: String,
+    screens: Vec<ScreenConfig>,
+    screen_adjacency: Vec<ScreenAdjacency>,
+}
+
+/// Set up N daemons on loopback. Returns the cluster and addresses.
+/// `build_specs` receives the bound addresses and returns a spec per daemon.
+async fn setup_cluster<F>(n: usize, build_specs: F) -> TestCluster
+where
+    F: FnOnce(&[SocketAddr]) -> Vec<DaemonSpec>,
+{
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Bind all transports first so we know the addresses.
+    let mut transports = Vec::new();
+    let mut addrs = Vec::new();
+    for _ in 0..n {
+        let cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+        let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let transport =
+            cross_control_protocol::QuicTransport::bind(bind, &cert.cert_pem, &cert.key_pem)
+                .unwrap();
+        addrs.push(transport.local_addr().unwrap());
+        transports.push(transport);
+    }
+
+    let specs = build_specs(&addrs);
+    assert_eq!(specs.len(), n);
+
+    let mut feeds = Vec::new();
+    let mut statuses = Vec::new();
+    let mut shutdowns = Vec::new();
+    let mut handles = Vec::new();
+
+    for (i, (transport, spec)) in transports.into_iter().zip(specs).enumerate() {
+        let (capture, feed) = MockCapture::new();
+        let emu = MockEmulation::new();
+
+        let config = Config {
+            daemon: DaemonConfig {
+                screen_width: 1920,
+                screen_height: 1080,
+                ..DaemonConfig::default()
+            },
+            identity: IdentityConfig {
+                name: spec.name.clone(),
+            },
+            screens: spec.screens,
+            screen_adjacency: spec.screen_adjacency,
+            ..Config::default()
+        };
+
+        let mut daemon = Daemon::new(
+            config,
+            MachineId::new(),
+            transport,
+            Box::new(capture),
+            Box::new(emu),
+        );
+        daemon.set_local_devices(test_devices());
+        statuses.push(daemon.status_receiver());
+        shutdowns.push(daemon.event_sender());
+        feeds.push(feed);
+
+        let name = spec.name;
+        let handle = tokio::spawn(async move {
+            if let Err(e) = daemon.run().await {
+                eprintln!("daemon {name} (idx {i}) error: {e}");
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all daemons to reach expected session counts.
+    // Each daemon with outbound addresses will connect; each accept completes.
+    // Give a generous timeout.
+    // We don't know expected counts here, so just wait for at least 1 session each.
+    // The caller can do more specific waits.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let all_connected = statuses
+                .iter()
+                .all(|s| s.borrow().session_count >= 1);
+            if all_connected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("all daemons should establish at least 1 session");
+
+    // Let device announcements propagate.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    TestCluster {
+        feeds,
+        statuses,
+        shutdowns,
+        handles,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Three-screen tests: A (center), B (above), C (right)
+// ---------------------------------------------------------------------------
+
+/// Set up: A connects to B (above) and C (right).
+/// A knows the full graph via screen_adjacency.
+///
+///        B
+///        |
+///    A ——— C
+async fn setup_three_screens() -> TestCluster {
+    setup_cluster(3, |addrs| {
+        vec![
+            DaemonSpec {
+                name: "A".into(),
+                screens: vec![
+                    ScreenConfig {
+                        name: "B".into(),
+                        address: Some(addrs[1].to_string()),
+                        position: Position::Above,
+                        fingerprint: None,
+                    },
+                    ScreenConfig {
+                        name: "C".into(),
+                        address: Some(addrs[2].to_string()),
+                        position: Position::Right,
+                        fingerprint: None,
+                    },
+                ],
+                screen_adjacency: vec![],
+            },
+            DaemonSpec {
+                name: "B".into(),
+                screens: vec![ScreenConfig {
+                    name: "A".into(),
+                    address: None,
+                    position: Position::Below,
+                    fingerprint: None,
+                }],
+                screen_adjacency: vec![],
+            },
+            DaemonSpec {
+                name: "C".into(),
+                screens: vec![ScreenConfig {
+                    name: "A".into(),
+                    address: None,
+                    position: Position::Left,
+                    fingerprint: None,
+                }],
+                screen_adjacency: vec![],
+            },
+        ]
+    })
+    .await
+}
+
+#[tokio::test]
+async fn test_three_screens_a_to_b_above() {
+    let mut cluster = setup_three_screens().await;
+
+    // Wait for A to have 2 sessions (B and C).
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.session_count >= 2
+    })
+    .await
+    .expect("A should have 2 sessions");
+
+    // Push A's cursor upward to cross into B.
+    cluster.push_cursor_to_edge(0, 0, -500).await;
+
+    // A should now be controlling.
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("A should be controlling B");
+
+    // B should be controlled.
+    wait_for_status(&mut cluster.statuses[1], Duration::from_secs(5), |s| {
+        s.controlled_by.is_some()
+    })
+    .await
+    .expect("B should be controlled by A");
+
+    // C should be unaffected.
+    let status_c = cluster.statuses[2].borrow().clone();
+    assert!(status_c.controlling.is_none());
+    assert!(status_c.controlled_by.is_none());
+
+    cluster.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_three_screens_a_to_c_right() {
+    let mut cluster = setup_three_screens().await;
+
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.session_count >= 2
+    })
+    .await
+    .expect("A should have 2 sessions");
+
+    // Push A's cursor right to cross into C.
+    cluster.push_cursor_to_edge(0, 500, 0).await;
+
+    // A should now be controlling.
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("A should be controlling C");
+
+    // C should be controlled.
+    wait_for_status(&mut cluster.statuses[2], Duration::from_secs(5), |s| {
+        s.controlled_by.is_some()
+    })
+    .await
+    .expect("C should be controlled by A");
+
+    // B should be unaffected.
+    let status_b = cluster.statuses[1].borrow().clone();
+    assert!(status_b.controlling.is_none());
+    assert!(status_b.controlled_by.is_none());
+
+    cluster.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_three_screens_cursor_returns_from_b_to_a() {
+    let mut cluster = setup_three_screens().await;
+
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.session_count >= 2
+    })
+    .await
+    .expect("A should have 2 sessions");
+
+    // Push cursor up into B.
+    cluster.push_cursor_to_edge(0, 0, -500).await;
+
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("A should be controlling B");
+
+    // Now A is controlling B. Push cursor down — B should send Leave
+    // (cursor hits B's bottom edge where A lives) and control returns to A.
+    // We inject mouse moves into A's capture (A forwards them to B).
+    for _ in 0..10 {
+        let event = CapturedEvent {
+            device_id: DeviceId(2),
+            timestamp_us: 2000,
+            event: InputEvent::MouseMove { dx: 0, dy: 500 },
+        };
+        cluster.feeds[0].send(event).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // A should release control (B sent Leave back).
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.controlling.is_none()
+    })
+    .await
+    .expect("A should release control when cursor returns from B");
+
+    cluster.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Four-screen multi-hop test: A→right→B→below→C via adjacency
+// ---------------------------------------------------------------------------
+
+/// Layout:
+///   A — B
+///   |   |
+///   +   C
+///
+/// A connects to B (right) and C (below-right, via Below for session).
+/// B connects to C (below).
+/// A's adjacency says B→below→C so A can multi-hop.
+///
+/// The server (A) must have sessions with ALL machines for multi-hop to
+/// work, since it sends Enter directly to the target.
+#[tokio::test]
+async fn test_multi_hop_a_to_b_to_c() {
+    let mut cluster = setup_cluster(3, |addrs| {
+        vec![
+            DaemonSpec {
+                name: "A".into(),
+                screens: vec![
+                    ScreenConfig {
+                        name: "B".into(),
+                        address: Some(addrs[1].to_string()),
+                        position: Position::Right,
+                        fingerprint: None,
+                    },
+                    ScreenConfig {
+                        name: "C".into(),
+                        address: Some(addrs[2].to_string()),
+                        position: Position::Below,
+                        fingerprint: None,
+                    },
+                ],
+                // A knows that below B is C (for multi-hop routing).
+                screen_adjacency: vec![ScreenAdjacency {
+                    screen: "B".into(),
+                    neighbor: "C".into(),
+                    position: Position::Below,
+                }],
+            },
+            DaemonSpec {
+                name: "B".into(),
+                screens: vec![
+                    ScreenConfig {
+                        name: "A".into(),
+                        address: None,
+                        position: Position::Left,
+                        fingerprint: None,
+                    },
+                    ScreenConfig {
+                        name: "C".into(),
+                        address: Some(addrs[2].to_string()),
+                        position: Position::Below,
+                        fingerprint: None,
+                    },
+                ],
+                screen_adjacency: vec![],
+            },
+            DaemonSpec {
+                name: "C".into(),
+                screens: vec![
+                    ScreenConfig {
+                        name: "B".into(),
+                        address: None,
+                        position: Position::Above,
+                        fingerprint: None,
+                    },
+                    ScreenConfig {
+                        name: "A".into(),
+                        address: None,
+                        position: Position::Left,
+                        fingerprint: None,
+                    },
+                ],
+                screen_adjacency: vec![],
+            },
+        ]
+    })
+    .await;
+
+    // Wait for A to have 2 sessions (B + C), B to have 2 (A + C).
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.session_count >= 2
+    })
+    .await
+    .expect("A should have sessions with B and C");
+
+    wait_for_status(&mut cluster.statuses[1], Duration::from_secs(5), |s| {
+        s.session_count >= 2
+    })
+    .await
+    .expect("B should have sessions with A and C");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Step 1: Push A's cursor right into B.
+    cluster.push_cursor_to_edge(0, 500, 0).await;
+
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("A should be controlling B");
+
+    wait_for_status(&mut cluster.statuses[1], Duration::from_secs(5), |s| {
+        s.controlled_by.is_some()
+    })
+    .await
+    .expect("B should be controlled by A");
+
+    // Step 2: Push cursor down — B's bottom edge. B sends Leave with
+    // edge=Bottom. A's adjacency map says (B, Bottom) → C.
+    // A should multi-hop: release B, initiate control of C.
+    for _ in 0..10 {
+        let event = CapturedEvent {
+            device_id: DeviceId(2),
+            timestamp_us: 3000,
+            event: InputEvent::MouseMove { dx: 0, dy: 500 },
+        };
+        cluster.feeds[0].send(event).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // B should send Leave, A processes it, multi-hops to C.
+    // A should now be controlling C (not B).
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("A should be controlling C after multi-hop");
+
+    // C should be controlled.
+    wait_for_status(&mut cluster.statuses[2], Duration::from_secs(5), |s| {
+        s.controlled_by.is_some()
+    })
+    .await
+    .expect("C should be controlled by A after multi-hop");
+
+    // B should no longer be controlled.
+    wait_for_status(&mut cluster.statuses[1], Duration::from_secs(5), |s| {
+        s.controlled_by.is_none()
+    })
+    .await
+    .expect("B should be released after multi-hop");
+
+    cluster.shutdown().await;
 }

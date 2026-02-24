@@ -16,6 +16,22 @@ pub struct Config {
     pub clipboard: ClipboardConfig,
     #[serde(default)]
     pub screens: Vec<ScreenConfig>,
+    #[serde(default)]
+    pub screen_adjacency: Vec<ScreenAdjacency>,
+}
+
+/// An adjacency edge between two screens in the full screen graph.
+///
+/// Used by the server to know where to route the cursor when it leaves
+/// a remote screen (multi-hop navigation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenAdjacency {
+    /// The screen the cursor is leaving.
+    pub screen: String,
+    /// The neighboring screen in the given direction.
+    pub neighbor: String,
+    /// The position of `neighbor` relative to `screen`.
+    pub position: Position,
 }
 
 /// Daemon network and runtime settings.

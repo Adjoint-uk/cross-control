@@ -1,7 +1,7 @@
 //! Maps terminal keyboard events to mock capture events.
 
 use cross_control_types::{ButtonState, CapturedEvent, DeviceId, InputEvent, KeyCode};
-use crossterm::event::{KeyCode as CtKeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode as CtKeyCode, KeyEvent};
 use tokio::sync::mpsc;
 
 use crate::app::AppState;
@@ -37,22 +37,16 @@ pub async fn handle_key(
             send_mouse_move(feed, 0, MOUSE_STEP, app).await;
         }
 
-        // Escape with Ctrl+Shift -> release hotkey
+        // F12 -> release hotkey
+        CtKeyCode::F(12) => {
+            send_key(feed, KeyCode::F12, ButtonState::Pressed, app).await;
+            send_key(feed, KeyCode::F12, ButtonState::Released, app).await;
+        }
+
+        // Escape
         CtKeyCode::Esc => {
-            if key
-                .modifiers
-                .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
-            {
-                send_key(feed, KeyCode::LeftCtrl, ButtonState::Pressed, app).await;
-                send_key(feed, KeyCode::LeftShift, ButtonState::Pressed, app).await;
-                send_key(feed, KeyCode::Escape, ButtonState::Pressed, app).await;
-                send_key(feed, KeyCode::Escape, ButtonState::Released, app).await;
-                send_key(feed, KeyCode::LeftShift, ButtonState::Released, app).await;
-                send_key(feed, KeyCode::LeftCtrl, ButtonState::Released, app).await;
-            } else {
-                send_key(feed, KeyCode::Escape, ButtonState::Pressed, app).await;
-                send_key(feed, KeyCode::Escape, ButtonState::Released, app).await;
-            }
+            send_key(feed, KeyCode::Escape, ButtonState::Pressed, app).await;
+            send_key(feed, KeyCode::Escape, ButtonState::Released, app).await;
         }
 
         // Letter keys

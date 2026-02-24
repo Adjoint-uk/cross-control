@@ -18,7 +18,7 @@ use crate::session::PeerSession;
 
 /// Events processed by the daemon's main loop.
 pub enum DaemonEvent {
-    /// A new peer connected (inbound).
+    /// A new peer connected (inbound) — handed off to a background handshake task.
     IncomingConnection(cross_control_protocol::PeerConnection),
     /// A captured local input event.
     CapturedInput(CapturedEvent),
@@ -34,6 +34,10 @@ pub enum DaemonEvent {
     },
     /// A peer disconnected.
     PeerDisconnected(MachineId),
+    /// A fully handshaked session is ready (from a background task).
+    SessionReady {
+        session: PeerSession,
+    },
     /// Shutdown signal.
     Shutdown,
 }
@@ -79,10 +83,17 @@ pub struct Daemon {
     controlling: Option<MachineId>,
     /// Which peer is currently controlling us, if any.
     controlled_by: Option<MachineId>,
+    /// The edge the cursor entered from when we are being controlled.
+    /// Suppresses Leave checks on this edge until the cursor moves away,
+    /// preventing an immediate bounce-back when the cursor starts AT the
+    /// entry edge.
+    entry_edge: Option<ScreenEdge>,
     /// Hotkey state tracking: set of currently pressed keys.
     hotkey_pressed: Vec<KeyCode>,
     /// Status broadcast channel.
     status_tx: watch::Sender<DaemonStatus>,
+    /// Full screen adjacency graph: `(screen_name, edge) → neighbor_name`.
+    adjacency: HashMap<(String, ScreenEdge), String>,
 }
 
 impl Daemon {
@@ -104,6 +115,24 @@ impl Daemon {
             ..DaemonStatus::default()
         });
 
+        // Build the full adjacency map.
+        // 1) From config.screens: our own direct neighbors.
+        let my_name = config.identity.name.clone();
+        let mut adjacency: HashMap<(String, ScreenEdge), String> = HashMap::new();
+        for sc in &config.screens {
+            let edge = sc.position.local_edge();
+            adjacency.insert((my_name.clone(), edge), sc.name.clone());
+            // Auto-generate inverse: neighbor → opposite edge → us
+            adjacency.insert((sc.name.clone(), edge.opposite()), my_name.clone());
+        }
+        // 2) From config.screen_adjacency: remote edges.
+        for adj in &config.screen_adjacency {
+            let edge = adj.position.local_edge();
+            adjacency.insert((adj.screen.clone(), edge), adj.neighbor.clone());
+            // Auto-generate inverse
+            adjacency.insert((adj.neighbor.clone(), edge.opposite()), adj.screen.clone());
+        }
+
         Self {
             cursor_x,
             cursor_y,
@@ -119,8 +148,10 @@ impl Daemon {
             event_rx,
             controlling: None,
             controlled_by: None,
+            entry_edge: None,
             hotkey_pressed: Vec::new(),
             status_tx,
+            adjacency,
         }
     }
 
@@ -158,33 +189,112 @@ impl Daemon {
         let transport_local = self.transport.local_addr()?;
         info!(addr = %transport_local, "daemon listening");
 
-        // Connect to statically configured peers
-        let peers_to_connect: Vec<(SocketAddr, String)> = self
-            .config
-            .screens
-            .iter()
-            .filter_map(|sc| {
-                sc.address.as_ref().map(|addr_str| {
-                    let addr: SocketAddr = addr_str
-                        .parse()
-                        .or_else(|_| format!("{addr_str}:{}", self.config.daemon.port).parse())
-                        .ok()?;
-                    Some((addr, sc.name.clone()))
-                })
-            })
-            .flatten()
-            .collect();
-
-        for (addr, name) in peers_to_connect {
-            info!(address = %addr, name = %name, "connecting to configured peer");
-            match self.transport.connect(addr, "cross-control").await {
-                Ok(conn) => {
-                    if let Err(e) = self.setup_outbound_session(conn, &name).await {
-                        warn!(error = %e, "failed to set up outbound session");
+        // Spawn accept loop as a background task. Each accepted connection
+        // gets its own handshake task so the event loop never blocks.
+        {
+            let transport = self.transport.clone();
+            let event_tx = self.event_tx.clone();
+            let our_id = self.machine_id;
+            let our_name = self.config.identity.name.clone();
+            let our_screen = self.screen.clone();
+            let local_devices = self.local_devices.clone();
+            tokio::spawn(async move {
+                loop {
+                    match transport.accept().await {
+                        Ok(conn) => {
+                            let tx = event_tx.clone();
+                            let name = our_name.clone();
+                            let screen = our_screen.clone();
+                            let devs = local_devices.clone();
+                            tokio::spawn(async move {
+                                let remote = conn.remote_address();
+                                match perform_handshake_responder(
+                                    conn, our_id, &name, &screen, &devs,
+                                )
+                                .await
+                                {
+                                    Ok(session) => {
+                                        info!(
+                                            peer = %session.name,
+                                            remote = %remote,
+                                            "inbound handshake complete"
+                                        );
+                                        let _ = tx
+                                            .send(DaemonEvent::SessionReady { session })
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            remote = %remote,
+                                            error = %e,
+                                            "inbound handshake failed"
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            debug!(error = %e, "accept loop ending");
+                            break;
+                        }
                     }
                 }
-                Err(e) => {
-                    warn!(address = %addr, error = %e, "failed to connect to peer");
+            });
+        }
+
+        // Spawn outbound connection + handshake tasks. Each task connects,
+        // completes the handshake, then sends the ready session back.
+        for sc in &self.config.screens {
+            if let Some(addr_str) = &sc.address {
+                let addr: Option<SocketAddr> = addr_str
+                    .parse()
+                    .or_else(|_| format!("{addr_str}:{}", self.config.daemon.port).parse())
+                    .ok();
+                if let Some(addr) = addr {
+                    let transport = self.transport.clone();
+                    let event_tx = self.event_tx.clone();
+                    let peer_name = sc.name.clone();
+                    let our_id = self.machine_id;
+                    let our_name = self.config.identity.name.clone();
+                    let our_screen = self.screen.clone();
+                    let local_devices = self.local_devices.clone();
+                    tokio::spawn(async move {
+                        match transport.connect(addr, "cross-control").await {
+                            Ok(conn) => {
+                                match perform_handshake_initiator(
+                                    conn, our_id, &our_name, &our_screen, &local_devices,
+                                )
+                                .await
+                                {
+                                    Ok(session) => {
+                                        info!(
+                                            peer = %session.name,
+                                            address = %addr,
+                                            "outbound handshake complete"
+                                        );
+                                        let _ = event_tx
+                                            .send(DaemonEvent::SessionReady { session })
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            peer = %peer_name,
+                                            address = %addr,
+                                            error = %e,
+                                            "outbound handshake failed"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    address = %addr,
+                                    error = %e,
+                                    "failed to connect to peer"
+                                );
+                            }
+                        }
+                    });
                 }
             }
         }
@@ -192,53 +302,63 @@ impl Daemon {
         info!("daemon running");
         self.broadcast_status();
 
-        // Main event loop
-        loop {
-            tokio::select! {
-                // Accept new connections
-                result = self.transport.accept() => {
-                    match result {
-                        Ok(conn) => {
-                            if let Err(e) = self.handle_incoming_connection(conn).await {
-                                warn!(error = %e, "failed to handle incoming connection");
-                            }
-                        }
-                        Err(e) => {
-                            debug!(error = %e, "accept error");
-                        }
-                    }
-                }
-                // Process daemon events
-                event = self.event_rx.recv() => {
-                    match event {
-                        Some(DaemonEvent::CapturedInput(captured)) => {
-                            self.handle_captured_input(captured).await;
-                        }
-                        Some(DaemonEvent::PeerControl { machine_id, msg }) => {
-                            self.handle_peer_control(machine_id, msg).await;
-                        }
-                        Some(DaemonEvent::PeerInput { machine_id, msg }) => {
-                            self.handle_peer_input(machine_id, msg).await;
-                        }
-                        Some(DaemonEvent::PeerDisconnected(machine_id)) => {
-                            self.handle_peer_disconnected(machine_id).await;
-                        }
-                        Some(DaemonEvent::Shutdown) | None => {
-                            info!("shutting down");
-                            break;
-                        }
-                        Some(DaemonEvent::IncomingConnection(conn)) => {
-                            if let Err(e) = self.handle_incoming_connection(conn).await {
-                                warn!(error = %e, "failed to handle incoming connection");
-                            }
-                        }
-                    }
-                    self.broadcast_status();
-                }
+        // Main event loop — purely event-driven, never blocks on I/O.
+        while let Some(event) = self.event_rx.recv().await {
+            if self.handle_event(event).await {
+                break;
             }
         }
 
         self.shutdown().await
+    }
+
+    /// Handle a single daemon event. Returns `true` if the daemon should shut down.
+    async fn handle_event(&mut self, event: DaemonEvent) -> bool {
+        match event {
+            DaemonEvent::CapturedInput(captured) => {
+                self.handle_captured_input(captured).await;
+            }
+            DaemonEvent::PeerControl { machine_id, msg } => {
+                self.handle_peer_control(machine_id, msg).await;
+            }
+            DaemonEvent::PeerInput { machine_id, msg } => {
+                self.handle_peer_input(machine_id, msg).await;
+            }
+            DaemonEvent::PeerDisconnected(machine_id) => {
+                self.handle_peer_disconnected(machine_id).await;
+            }
+            DaemonEvent::SessionReady { session } => {
+                self.handle_session_ready(session);
+            }
+            DaemonEvent::Shutdown => {
+                info!("shutting down");
+                return true;
+            }
+            DaemonEvent::IncomingConnection(conn) => {
+                // Spawn handshake in background so we don't block the event loop.
+                let tx = self.event_tx.clone();
+                let our_id = self.machine_id;
+                let our_name = self.config.identity.name.clone();
+                let our_screen = self.screen.clone();
+                let local_devices = self.local_devices.clone();
+                tokio::spawn(async move {
+                    match perform_handshake_responder(
+                        conn, our_id, &our_name, &our_screen, &local_devices,
+                    )
+                    .await
+                    {
+                        Ok(session) => {
+                            let _ = tx.send(DaemonEvent::SessionReady { session }).await;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "incoming connection handshake failed");
+                        }
+                    }
+                });
+            }
+        }
+        self.broadcast_status();
+        false
     }
 
     fn broadcast_status(&self) {
@@ -251,60 +371,12 @@ impl Daemon {
         });
     }
 
-    async fn setup_outbound_session(
-        &mut self,
-        conn: cross_control_protocol::PeerConnection,
-        _peer_name: &str,
-    ) -> Result<(), DaemonError> {
-        let (control_tx, control_rx) = conn.open_control_stream().await?;
-        let mut session = PeerSession::new(conn, control_tx, control_rx);
-
-        session
-            .handshake_initiator(self.machine_id, &self.config.identity.name, &self.screen)
-            .await?;
-
-        // Announce our devices
-        session.announce_devices(&self.local_devices).await?;
-
+    fn handle_session_ready(&mut self, session: PeerSession) {
         let peer_id = session.machine_id;
         let peer_name = session.name.clone();
-
         self.sessions.insert(peer_id, session);
-
-        // Spawn control message reader (must be after insert so we can get the rx)
         self.spawn_control_reader(peer_id);
-
-        info!(peer = %peer_name, id = %peer_id, "outbound session established");
-        Ok(())
-    }
-
-    async fn handle_incoming_connection(
-        &mut self,
-        conn: cross_control_protocol::PeerConnection,
-    ) -> Result<(), DaemonError> {
-        let remote = conn.remote_address();
-        debug!(remote = %remote, "handling incoming connection");
-
-        let (control_tx, control_rx) = conn.accept_control_stream().await?;
-        let mut session = PeerSession::new(conn, control_tx, control_rx);
-
-        session
-            .handshake_responder(self.machine_id, &self.config.identity.name, &self.screen)
-            .await?;
-
-        // Announce our devices
-        session.announce_devices(&self.local_devices).await?;
-
-        let peer_id = session.machine_id;
-        let peer_name = session.name.clone();
-
-        self.sessions.insert(peer_id, session);
-
-        // Spawn control message reader (must be after insert)
-        self.spawn_control_reader(peer_id);
-
-        info!(peer = %peer_name, id = %peer_id, "inbound session established");
-        Ok(())
+        info!(peer = %peer_name, id = %peer_id, "session established");
     }
 
     fn spawn_control_reader(&mut self, peer_id: MachineId) {
@@ -524,6 +596,7 @@ impl Daemon {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_peer_control(&mut self, machine_id: MachineId, msg: ControlMessage) {
         match msg {
             ControlMessage::Enter { edge, position } => {
@@ -532,6 +605,32 @@ impl Daemon {
                     match session.handle_enter().await {
                         Ok(()) => {
                             self.controlled_by = Some(machine_id);
+                            // The edge in Enter is the exit edge on the controller's
+                            // screen. We need the opposite edge — where the cursor
+                            // enters our screen.
+                            let entry_edge = edge.opposite();
+                            self.entry_edge = Some(entry_edge);
+                            let pos = i32::try_from(position).unwrap_or(0);
+                            match entry_edge {
+                                ScreenEdge::Left => {
+                                    self.cursor_x = 0;
+                                    self.cursor_y = pos;
+                                }
+                                ScreenEdge::Right => {
+                                    let w = i32::try_from(self.screen.width).unwrap_or(1920);
+                                    self.cursor_x = w - 1;
+                                    self.cursor_y = pos;
+                                }
+                                ScreenEdge::Top => {
+                                    self.cursor_x = pos;
+                                    self.cursor_y = 0;
+                                }
+                                ScreenEdge::Bottom => {
+                                    let h = i32::try_from(self.screen.height).unwrap_or(1080);
+                                    self.cursor_x = pos;
+                                    self.cursor_y = h - 1;
+                                }
+                            }
                             // Accept input stream asynchronously — the initiator
                             // opened a uni stream but QUIC may not have delivered
                             // the stream frame yet.
@@ -550,12 +649,83 @@ impl Daemon {
                 }
                 self.controlling = Some(machine_id);
             }
-            ControlMessage::Leave { .. } => {
+            ControlMessage::Leave { edge, position } => {
                 if let Some(session) = self.sessions.get_mut(&machine_id) {
                     session.handle_leave();
                 }
                 if self.controlled_by == Some(machine_id) {
                     self.controlled_by = None;
+                    self.entry_edge = None;
+                }
+                // If we were controlling this peer, check adjacency map for
+                // multi-hop: maybe the cursor should go to another screen
+                // rather than returning to us.
+                if self.controlling == Some(machine_id) {
+                    info!(peer = %machine_id, ?edge, position, "peer sent Leave");
+                    self.controlling = None;
+                    let _ = self.capture.release().await;
+
+                    // Look up the leaving peer's name
+                    let peer_name = self
+                        .sessions
+                        .get(&machine_id)
+                        .map(|s| s.name.clone());
+
+                    // Check adjacency map: where should the cursor go?
+                    let next_target = peer_name.as_ref().and_then(|name| {
+                        self.adjacency
+                            .get(&(name.clone(), edge))
+                            .cloned()
+                    });
+
+                    // If the next target is us (local machine), fall through
+                    // to the default cursor-return behavior.
+                    let my_name = self.config.identity.name.clone();
+                    let next_target = next_target.filter(|t| *t != my_name);
+
+                    // Try to find the MachineId for the next target
+                    let next_peer = next_target.and_then(|target_name| {
+                        self.sessions
+                            .iter()
+                            .find(|(_, s)| s.name == target_name)
+                            .map(|(id, _)| *id)
+                    });
+
+                    if let Some(next_peer_id) = next_peer {
+                        // Multi-hop: transfer control to the next screen
+                        info!(
+                            next_peer = %next_peer_id,
+                            ?edge,
+                            position,
+                            "multi-hop: transferring control to next screen"
+                        );
+                        self.initiate_control(next_peer_id, edge, position).await;
+                    } else {
+                        // No multi-hop target — cursor returns to us.
+                        // Place cursor at the opposite edge.
+                        let return_edge = edge.opposite();
+                        let pos = i32::try_from(position).unwrap_or(0);
+                        let width = i32::try_from(self.screen.width).unwrap_or(1920);
+                        let height = i32::try_from(self.screen.height).unwrap_or(1080);
+                        match return_edge {
+                            ScreenEdge::Left => {
+                                self.cursor_x = 0;
+                                self.cursor_y = pos;
+                            }
+                            ScreenEdge::Right => {
+                                self.cursor_x = width - 1;
+                                self.cursor_y = pos;
+                            }
+                            ScreenEdge::Top => {
+                                self.cursor_x = pos;
+                                self.cursor_y = 0;
+                            }
+                            ScreenEdge::Bottom => {
+                                self.cursor_x = pos;
+                                self.cursor_y = height - 1;
+                            }
+                        }
+                    }
                 }
             }
             ControlMessage::DeviceAnnounce(info) => {
@@ -603,6 +773,65 @@ impl Daemon {
             return;
         }
 
+        // Track cursor position from remote input for barrier detection
+        for event in &msg.events {
+            if let InputEvent::MouseMove { dx, dy } = event {
+                self.cursor_x += dx;
+                self.cursor_y += dy;
+                let width = i32::try_from(self.screen.width).unwrap_or(i32::MAX);
+                let height = i32::try_from(self.screen.height).unwrap_or(i32::MAX);
+                self.cursor_x = self.cursor_x.clamp(0, width - 1);
+                self.cursor_y = self.cursor_y.clamp(0, height - 1);
+            }
+        }
+
+        // Clear the entry_edge suppression once the cursor moves away from
+        // the entry edge. This prevents immediate bounce-back when the cursor
+        // starts AT the entry edge, while still allowing Leave if the user
+        // deliberately moves back to it later.
+        if let Some(entry) = self.entry_edge {
+            if !self.screen.is_at_edge(self.cursor_x, self.cursor_y, entry) {
+                self.entry_edge = None;
+            }
+        }
+
+        // Check if cursor has hit ANY screen edge — if so, send Leave to
+        // the controller. The Leave message includes the exit edge so the
+        // controller can decide where to route the cursor (multi-hop via
+        // adjacency map, or return to itself).
+        if let Some(controller_id) = self.controlled_by {
+            for screen_config in &self.config.screens {
+                let edge = screen_config.position.local_edge();
+                // Skip the entry edge while cursor is still on it (suppression).
+                if self.entry_edge == Some(edge) {
+                    continue;
+                }
+                if self.screen.is_at_edge(self.cursor_x, self.cursor_y, edge) {
+                    let position = match edge {
+                        ScreenEdge::Left | ScreenEdge::Right => {
+                            u32::try_from(self.cursor_y).unwrap_or(0)
+                        }
+                        ScreenEdge::Top | ScreenEdge::Bottom => {
+                            u32::try_from(self.cursor_x).unwrap_or(0)
+                        }
+                    };
+                    info!(
+                        peer = %controller_id,
+                        ?edge,
+                        neighbor = %screen_config.name,
+                        position,
+                        "cursor hit edge, sending Leave"
+                    );
+                    if let Some(session) = self.sessions.get_mut(&controller_id) {
+                        let _ = session.leave(edge, position).await;
+                    }
+                    self.controlled_by = None;
+                    self.entry_edge = None;
+                    return;
+                }
+            }
+        }
+
         if let Some(session) = self.sessions.get(&machine_id) {
             if let Some(&virtual_id) = session.device_map.get(&msg.device_id) {
                 for event in &msg.events {
@@ -623,6 +852,7 @@ impl Daemon {
         }
         if self.controlled_by == Some(machine_id) {
             self.controlled_by = None;
+            self.entry_edge = None;
         }
 
         if let Some(mut session) = self.sessions.remove(&machine_id) {
@@ -660,4 +890,40 @@ impl Daemon {
     pub fn set_local_devices(&mut self, devices: Vec<DeviceInfo>) {
         self.local_devices = devices;
     }
+}
+
+/// Perform a responder handshake in a background task (accept bidi stream,
+/// read Hello, send Welcome, announce devices).
+async fn perform_handshake_responder(
+    conn: cross_control_protocol::PeerConnection,
+    our_id: MachineId,
+    our_name: &str,
+    our_screen: &ScreenGeometry,
+    local_devices: &[DeviceInfo],
+) -> Result<PeerSession, DaemonError> {
+    let (control_tx, control_rx) = conn.accept_control_stream().await?;
+    let mut session = PeerSession::new(conn, control_tx, control_rx);
+    session
+        .handshake_responder(our_id, our_name, our_screen)
+        .await?;
+    session.announce_devices(local_devices).await?;
+    Ok(session)
+}
+
+/// Perform an initiator handshake in a background task (open bidi stream,
+/// send Hello, read Welcome, announce devices).
+async fn perform_handshake_initiator(
+    conn: cross_control_protocol::PeerConnection,
+    our_id: MachineId,
+    our_name: &str,
+    our_screen: &ScreenGeometry,
+    local_devices: &[DeviceInfo],
+) -> Result<PeerSession, DaemonError> {
+    let (control_tx, control_rx) = conn.open_control_stream().await?;
+    let mut session = PeerSession::new(conn, control_tx, control_rx);
+    session
+        .handshake_initiator(our_id, our_name, our_screen)
+        .await?;
+    session.announce_devices(local_devices).await?;
+    Ok(session)
 }

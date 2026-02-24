@@ -56,6 +56,19 @@ pub enum ScreenEdge {
     Bottom,
 }
 
+impl ScreenEdge {
+    /// Return the opposite edge.
+    #[must_use]
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+            Self::Top => Self::Bottom,
+            Self::Bottom => Self::Top,
+        }
+    }
+}
+
 /// A barrier defines a region on a screen edge that triggers switching.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 pub struct Barrier {

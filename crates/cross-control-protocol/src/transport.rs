@@ -13,6 +13,7 @@ use crate::tls;
 ///
 /// A single endpoint acts as both server (accepting connections) and client
 /// (connecting to peers).
+#[derive(Clone)]
 pub struct QuicTransport {
     endpoint: Endpoint,
 }
@@ -24,9 +25,11 @@ impl QuicTransport {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let server_config = tls::server_config(cert_pem, key_pem)?;
+        let client_config = tls::client_config_skip_verification()?;
 
-        let endpoint = Endpoint::server(server_config, addr)
+        let mut endpoint = Endpoint::server(server_config, addr)
             .map_err(|e| ProtocolError::Connection(e.to_string()))?;
+        endpoint.set_default_client_config(client_config);
 
         info!(addr = %addr, "QUIC transport bound");
         Ok(Self { endpoint })
@@ -51,13 +54,10 @@ impl QuicTransport {
 
     /// Connect to a remote peer.
     pub async fn connect(
-        &mut self,
+        &self,
         addr: SocketAddr,
         server_name: &str,
     ) -> Result<PeerConnection, ProtocolError> {
-        let client_config = tls::client_config_skip_verification()?;
-        self.endpoint.set_default_client_config(client_config);
-
         let connection = self
             .endpoint
             .connect(addr, server_name)
