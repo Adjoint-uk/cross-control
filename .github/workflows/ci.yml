@@ -37,10 +37,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            build-args: "--workspace"
+            test-args: "--workspace"
+          - os: windows-latest
+            build-args: "--workspace --exclude cross-control-cli --exclude cross-control-tui-test"
+            test-args: "--workspace --exclude cross-control-cli --exclude cross-control-tui-test"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
-      - run: cargo test --workspace
+      - run: cargo build ${{ matrix.build-args }}
+      - run: cargo test ${{ matrix.test-args }}
