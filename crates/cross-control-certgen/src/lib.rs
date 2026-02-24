@@ -62,6 +62,21 @@ pub fn generate_certificate(hostname: &str) -> Result<GeneratedCert, CertgenErro
     })
 }
 
+/// Compute the SHA-256 fingerprint from a PEM-encoded certificate string.
+pub fn fingerprint_from_pem(pem: &str) -> Result<String, CertgenError> {
+    use base64::Engine;
+
+    // Extract the base64 content between BEGIN/END markers
+    let der = pem
+        .lines()
+        .filter(|l| !l.starts_with("-----") && !l.is_empty())
+        .collect::<String>();
+    let der_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&der)
+        .map_err(|e| CertgenError::Generation(format!("invalid PEM data: {e}")))?;
+    Ok(sha256_fingerprint(&der_bytes))
+}
+
 /// Compute SHA-256 fingerprint of DER-encoded certificate bytes.
 fn sha256_fingerprint(der: &[u8]) -> String {
     use std::fmt::Write;

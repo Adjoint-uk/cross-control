@@ -274,6 +274,7 @@ name = "cross-control-certgen"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
+ "base64",
  "rcgen",
  "ring",
  "thiserror 2.0.18",
@@ -292,6 +293,7 @@ dependencies = [
  "cross-control-types",
  "hostname",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

@@ -25,7 +25,9 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use cross_control_daemon::config::{Config, DaemonConfig, IdentityConfig, InputConfig, ScreenAdjacency, ScreenConfig};
+use cross_control_daemon::config::{
+    Config, DaemonConfig, IdentityConfig, InputConfig, ScreenAdjacency, ScreenConfig,
+};
 use cross_control_daemon::{Daemon, DaemonEvent};
 use cross_control_input::mock::{MockCapture, MockEmulation};
 use cross_control_types::{
@@ -126,6 +128,7 @@ struct Handles {
     app: AppState,
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup_daemons() -> Result<Handles, Box<dyn std::error::Error>> {
     // Enable tracing to stderr for debugging connection issues
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -291,10 +294,18 @@ async fn setup_daemons() -> Result<Handles, Box<dyn std::error::Error>> {
     let mut daemon_b = bundle_b.daemon;
     let mut daemon_c = bundle_c.daemon;
     let mut daemon_d = bundle_d.daemon;
-    tokio::spawn(async move { let _ = daemon_d.run().await; });
-    tokio::spawn(async move { let _ = daemon_c.run().await; });
-    tokio::spawn(async move { let _ = daemon_b.run().await; });
-    tokio::spawn(async move { let _ = daemon_a.run().await; });
+    tokio::spawn(async move {
+        let _ = daemon_d.run().await;
+    });
+    tokio::spawn(async move {
+        let _ = daemon_c.run().await;
+    });
+    tokio::spawn(async move {
+        let _ = daemon_b.run().await;
+    });
+    tokio::spawn(async move {
+        let _ = daemon_a.run().await;
+    });
 
     // Wait for all daemons to establish their sessions
     // A should have 2 sessions (B, C), B should have 2 (A, D),

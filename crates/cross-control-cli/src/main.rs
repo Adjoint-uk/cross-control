@@ -62,8 +62,7 @@ async fn main() -> anyhow::Result<()> {
             stop_daemon()?;
         }
         Commands::Status => {
-            // TODO: Phase 2 — query daemon via IPC
-            eprintln!("cross-control status not yet implemented (Phase 2)");
+            show_status()?;
         }
         Commands::GenerateCert { output } => {
             let hostname = hostname::get()
@@ -137,7 +136,11 @@ async fn start_daemon(config_path: Option<&str>) -> anyhow::Result<()> {
 
     #[cfg(not(feature = "linux"))]
     {
-        anyhow::bail!("no input backend available for this platform");
+        anyhow::bail!(
+            "no input backend available for this platform. \
+             cross-control currently supports Linux only. \
+             Windows support is planned for a future release."
+        );
     }
 
     // Create and run daemon
@@ -179,6 +182,62 @@ async fn start_daemon(config_path: Option<&str>) -> anyhow::Result<()> {
     // Clean up PID file
     let _ = std::fs::remove_file(&pid_path);
     tracing::info!("daemon stopped");
+
+    Ok(())
+}
+
+fn show_status() -> anyhow::Result<()> {
+    use cross_control_daemon::setup;
+
+    let pid_path = setup::pid_file_path();
+    let config_dir = setup::config_dir();
+    let config_path = config_dir.join("config.toml");
+
+    // Check PID file
+    if !pid_path.exists() {
+        println!("Status:  stopped");
+        println!("Config:  {}", config_path.display());
+        return Ok(());
+    }
+
+    let pid_str = std::fs::read_to_string(&pid_path)?;
+    let pid: u32 = pid_str
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("corrupt PID file"))?;
+
+    // Check if process is alive via /proc/{pid}
+    let alive = std::path::Path::new(&format!("/proc/{pid}")).exists();
+
+    if alive {
+        println!("Status:  running");
+        println!("PID:     {pid}");
+    } else {
+        println!("Status:  stopped (stale PID file)");
+        // Clean up stale PID file
+        let _ = std::fs::remove_file(&pid_path);
+    }
+
+    println!("Config:  {}", config_path.display());
+
+    // Show machine name from config if available
+    if config_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = toml::from_str::<cross_control_daemon::config::Config>(&content) {
+                println!("Name:    {}", config.identity.name);
+            }
+        }
+    }
+
+    // Show cert fingerprint if available
+    let cert_path = config_dir.join("cross-control.crt");
+    if cert_path.exists() {
+        if let Ok(cert_pem) = std::fs::read_to_string(&cert_path) {
+            if let Ok(fingerprint) = cross_control_certgen::fingerprint_from_pem(&cert_pem) {
+                println!("Cert:    {fingerprint}");
+            }
+        }
+    }
 
     Ok(())
 }

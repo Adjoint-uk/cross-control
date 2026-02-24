@@ -28,7 +28,7 @@ pub fn draw(f: &mut Frame, app: &AppState) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Title
-            Constraint::Min(10),   // Screens
+            Constraint::Min(10),    // Screens
             Constraint::Length(10), // Event log
             Constraint::Length(3),  // Help bar
         ])
@@ -145,7 +145,11 @@ fn state_color(label: &str) -> Color {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::too_many_arguments)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments
+)]
 fn draw_screen(
     f: &mut Frame,
     area: Rect,
@@ -249,9 +253,10 @@ fn draw_log(f: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let help = Paragraph::new("q: quit  arrows: move cursor  letters: send keys  F12: release control")
-        .style(Style::default().fg(Color::DarkGray))
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
+    let help =
+        Paragraph::new("q: quit  arrows: move cursor  letters: send keys  F12: release control")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(Block::default().borders(Borders::ALL));
     f.render_widget(help, area);
 }

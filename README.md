@@ -15,7 +15,7 @@ cross-control takes a different approach:
 |---|---|---|---|---|---|---|
 | **Active** | Dead (2022) | Slow | Yes | Yes | Yes | **Yes** |
 | **Wayland** | No | Partial | Partial | Yes | Yes | **Native** |
-| **Windows** | Yes | Yes | Yes | No | Yes | **Yes** |
+| **Windows** | Yes | Yes | Yes | No | Yes | **Planned** |
 | **Protocol** | Synergy v1 | Synergy v1 | Proprietary | Custom | Custom | **QUIC** |
 | **Encryption** | Optional TLS | Optional TLS | TLS | TLS | None | **TLS 1.3 (always)** |
 | **Discovery** | No | No | No | No | No | **mDNS** |
@@ -31,6 +31,115 @@ cross-control takes a different approach:
 - **Certificate pinning** - SSH-style trust-on-first-use authentication. No central authority needed.
 - **Multi-machine** - Star topology supports any number of machines.
 - **Permissive license** - MIT OR Apache-2.0. Use it anywhere.
+
+## Requirements
+
+- **Linux** (x86_64 or aarch64) — Windows support is planned
+- **Rust 1.75+** (if building from source)
+- User must be in the `input` group to access keyboard/mouse devices
+- `/dev/uinput` must be accessible for virtual device emulation
+
+## Installation
+
+### Install script (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.sh | bash
+```
+
+### Prebuilt binaries
+
+Download the latest release from [GitHub Releases](https://github.com/Adjoint-uk/cross-control/releases).
+
+### Build from source
+
+```bash
+git clone https://github.com/Adjoint-uk/cross-control.git
+cd cross-control
+cargo install --path crates/cross-control-cli
+```
+
+### Linux permissions setup
+
+```bash
+# Add your user to the input group (required for keyboard/mouse access)
+sudo usermod -aG input $USER
+
+# Ensure uinput is accessible
+sudo modprobe uinput
+echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# Log out and back in for group changes to take effect
+```
+
+## Quick Start
+
+Set up two Linux machines on the same network:
+
+### 1. Install on both machines
+
+```bash
+cargo install --path crates/cross-control-cli
+```
+
+### 2. Generate certificates on both machines
+
+```bash
+cross-control generate-cert --output ~/.config/cross-control/
+```
+
+Note the fingerprint printed for each machine.
+
+### 3. Create configuration
+
+**Machine A** (left workstation at 192.168.1.10):
+
+```toml
+# ~/.config/cross-control/config.toml
+[identity]
+name = "workstation"
+
+[[screens]]
+name = "laptop"
+address = "192.168.1.20:24800"
+position = "Right"
+fingerprint = "SHA256:..."  # laptop's fingerprint
+```
+
+**Machine B** (right laptop at 192.168.1.20):
+
+```toml
+# ~/.config/cross-control/config.toml
+[identity]
+name = "laptop"
+
+[[screens]]
+name = "workstation"
+address = "192.168.1.10:24800"
+position = "Left"
+fingerprint = "SHA256:..."  # workstation's fingerprint
+```
+
+### 4. Start the daemon on both machines
+
+```bash
+cross-control start
+```
+
+### 5. Use it
+
+Move your cursor to the right edge of Machine A's screen. It will appear on Machine B. Move it back to the left edge to return.
+
+Press **Ctrl+Shift+Escape** to immediately release input and return control to the local machine.
+
+### 6. Check status
+
+```bash
+cross-control status
+```
+
+See [docs/setup-guide.md](docs/setup-guide.md) for detailed setup instructions and troubleshooting.
 
 ## Architecture
 
@@ -67,37 +176,6 @@ The project is organised as a Cargo workspace with 8 crates:
 | `cross-control-cli` | User-facing binary |
 | `cross-control-certgen` | TLS certificate generation |
 
-## Building
-
-```bash
-# Requirements: Rust 1.75+ (stable)
-cargo build --workspace
-
-# Run tests
-cargo test --workspace
-
-# Build release binary
-cargo build --release -p cross-control-cli
-```
-
-## Usage
-
-```bash
-# Generate a TLS certificate (first time)
-cross-control generate-cert --output ~/.config/cross-control/
-
-# Start the daemon
-cross-control start
-
-# Pair with another machine
-cross-control pair 192.168.1.42:24800
-
-# Check status
-cross-control status
-```
-
-See `examples/config.toml` for configuration options.
-
 ## Configuration
 
 Configuration lives at `~/.config/cross-control/config.toml`:
@@ -112,16 +190,26 @@ name = "my-workstation"
 
 [[screens]]
 name = "laptop"
+address = "192.168.1.42:24800"
+position = "Right"
+fingerprint = "SHA256:..."
+
+# For 3+ machines, define adjacency
+[[screen_adjacency]]
+screen = "laptop"
+neighbor = "tablet"
 position = "Right"
 ```
+
+See `examples/config.toml` for all configuration options.
 
 ## Development Status
 
 cross-control is in early development. Current status:
 
 - [x] **Phase 0**: Workspace scaffold, shared types, trait definitions, CI
-- [ ] **Phase 1**: Linux-to-Linux MVP (evdev capture, QUIC transport, basic switching)
-- [ ] **Phase 2**: Discovery, multi-machine, certificate pinning
+- [x] **Phase 1**: Linux-to-Linux MVP (evdev capture, QUIC transport, multi-hop switching, 57+ tests)
+- [ ] **Phase 2**: Discovery, certificate pinning, pairing workflow
 - [ ] **Phase 3**: Windows support, clipboard sharing
 - [ ] **Phase 4**: Wayland-native backends, polish
 - [ ] **Phase 5**: v1.0 stable release

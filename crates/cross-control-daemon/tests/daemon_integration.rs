@@ -3,7 +3,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use cross_control_daemon::config::{Config, DaemonConfig, IdentityConfig, ScreenAdjacency, ScreenConfig};
+use cross_control_daemon::config::{
+    Config, DaemonConfig, IdentityConfig, ScreenAdjacency, ScreenConfig,
+};
 use cross_control_daemon::{Daemon, DaemonEvent, DaemonStatus};
 use cross_control_input::mock::{MockCapture, MockEmulation, MockEmulationHandle};
 use cross_control_types::{
@@ -544,12 +546,7 @@ impl TestCluster {
     }
 
     /// Push cursor on daemon `idx` in a direction until it enters controlling state.
-    async fn push_cursor_to_edge(
-        &mut self,
-        idx: usize,
-        dx: i32,
-        dy: i32,
-    ) {
+    async fn push_cursor_to_edge(&mut self, idx: usize, dx: i32, dy: i32) {
         for _ in 0..10 {
             let event = CapturedEvent {
                 device_id: DeviceId(2),
@@ -644,9 +641,7 @@ where
     // The caller can do more specific waits.
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let all_connected = statuses
-                .iter()
-                .all(|s| s.borrow().session_count >= 1);
+            let all_connected = statuses.iter().all(|s| s.borrow().session_count >= 1);
             if all_connected {
                 break;
             }

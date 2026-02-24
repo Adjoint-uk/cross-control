@@ -35,9 +35,7 @@ pub enum DaemonEvent {
     /// A peer disconnected.
     PeerDisconnected(MachineId),
     /// A fully handshaked session is ready (from a background task).
-    SessionReady {
-        session: PeerSession,
-    },
+    SessionReady { session: PeerSession },
     /// Shutdown signal.
     Shutdown,
 }
@@ -166,6 +164,7 @@ impl Daemon {
     }
 
     /// Run the daemon event loop.
+    #[allow(clippy::too_many_lines)]
     pub async fn run(&mut self) -> Result<(), DaemonError> {
         // Start input capture
         let capture_tx = self.event_tx.clone();
@@ -219,9 +218,8 @@ impl Daemon {
                                             remote = %remote,
                                             "inbound handshake complete"
                                         );
-                                        let _ = tx
-                                            .send(DaemonEvent::SessionReady { session })
-                                            .await;
+                                        let _ =
+                                            tx.send(DaemonEvent::SessionReady { session }).await;
                                     }
                                     Err(e) => {
                                         warn!(
@@ -262,7 +260,11 @@ impl Daemon {
                         match transport.connect(addr, "cross-control").await {
                             Ok(conn) => {
                                 match perform_handshake_initiator(
-                                    conn, our_id, &our_name, &our_screen, &local_devices,
+                                    conn,
+                                    our_id,
+                                    &our_name,
+                                    &our_screen,
+                                    &local_devices,
                                 )
                                 .await
                                 {
@@ -343,7 +345,11 @@ impl Daemon {
                 let local_devices = self.local_devices.clone();
                 tokio::spawn(async move {
                     match perform_handshake_responder(
-                        conn, our_id, &our_name, &our_screen, &local_devices,
+                        conn,
+                        our_id,
+                        &our_name,
+                        &our_screen,
+                        &local_devices,
                     )
                     .await
                     {
@@ -666,17 +672,12 @@ impl Daemon {
                     let _ = self.capture.release().await;
 
                     // Look up the leaving peer's name
-                    let peer_name = self
-                        .sessions
-                        .get(&machine_id)
-                        .map(|s| s.name.clone());
+                    let peer_name = self.sessions.get(&machine_id).map(|s| s.name.clone());
 
                     // Check adjacency map: where should the cursor go?
-                    let next_target = peer_name.as_ref().and_then(|name| {
-                        self.adjacency
-                            .get(&(name.clone(), edge))
-                            .cloned()
-                    });
+                    let next_target = peer_name
+                        .as_ref()
+                        .and_then(|name| self.adjacency.get(&(name.clone(), edge)).cloned());
 
                     // If the next target is us (local machine), fall through
                     // to the default cursor-return behavior.

@@ -134,9 +134,7 @@ impl InputCapture for EvdevCapture {
         let device_list = Self::enumerate_devices();
 
         if device_list.is_empty() {
-            return Err(InputError::DeviceOpen(
-                "no keyboard or mouse devices found".to_string(),
-            ));
+            return Err(diagnose_no_devices());
         }
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -257,6 +255,72 @@ impl InputCapture for EvdevCapture {
         info!("input capture shut down");
         Ok(())
     }
+}
+
+/// Diagnose why no input devices were found — permissions vs genuinely empty.
+fn diagnose_no_devices() -> InputError {
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
+
+    let input_dir = std::path::Path::new("/dev/input");
+
+    // Check if /dev/input/ exists and is readable
+    match fs::read_dir(input_dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return InputError::DeviceOpen(
+                "permission denied reading /dev/input/. \
+                 Add your user to the 'input' group:\n  \
+                 sudo usermod -aG input $USER\n  \
+                 Then log out and back in."
+                    .to_string(),
+            );
+        }
+        Err(e) => {
+            return InputError::DeviceOpen(format!("/dev/input/ not accessible: {e}"));
+        }
+        Ok(entries) => {
+            // Directory readable but no devices matched — check if event files exist
+            // but we can't read them
+            let event_files: Vec<_> = entries
+                .filter_map(std::result::Result::ok)
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|n| n.starts_with("event"))
+                })
+                .collect();
+
+            if event_files.is_empty() {
+                return InputError::DeviceOpen(
+                    "no /dev/input/event* devices found. \
+                     Is this a headless server or container?"
+                        .to_string(),
+                );
+            }
+
+            // Event files exist — check if we can read any
+            let any_readable = event_files.iter().any(|f| {
+                fs::metadata(f.path())
+                    .map(|m| m.mode() & 0o004 != 0) // world-readable
+                    .unwrap_or(false)
+                    || fs::File::open(f.path()).is_ok()
+            });
+
+            if !any_readable {
+                return InputError::DeviceOpen(format!(
+                    "found {} input devices but cannot read them (permission denied). \
+                     Add your user to the 'input' group:\n  \
+                     sudo usermod -aG input $USER\n  \
+                     Then log out and back in.",
+                    event_files.len()
+                ));
+            }
+        }
+    }
+
+    InputError::DeviceOpen(
+        "no keyboard or mouse devices found (devices exist but none matched)".to_string(),
+    )
 }
 
 /// Convert a single evdev `InputEvent` to our `InputEvent`, if relevant.
