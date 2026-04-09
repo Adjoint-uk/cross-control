@@ -2,6 +2,8 @@
 
 The road from `0.1.0-alpha.1` to `1.0.0`.
 
+> **Next up — Phase 1 sprint:** implement the `mdns-sd` discovery backend in `cross-control-discovery` and wire it into the daemon. The dep is reserved at the workspace level but the crate is trait-only. Steps: add `mdns-sd` to `crates/cross-control-discovery/Cargo.toml` → create `src/mdns.rs` implementing the `Discovery` trait → loopback advertise+browse test → plumb into `cross-control-daemon` startup so peers without a static `address` are discovered automatically. This unblocks the v0.2.0-alpha demo.
+
 This document is the single source of truth for *what's next* and *what "done" means* at each milestone. The competitive reasoning behind cross-control's existence lives in [`docs/research-kvm-landscape.md`](docs/research-kvm-landscape.md); the architectural decisions live in [`docs/adr/`](docs/adr/). This file just orders the work.
 
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
