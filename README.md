@@ -1,5 +1,7 @@
 # cross-control
 
+> **Status: `0.1.0-alpha.1` — early alpha.** Scaffolding is in place; the end-to-end "cursor crosses between two machines" experience is not yet wired up. See [`ROADMAP.md`](ROADMAP.md) for what's next and what "done" means at each milestone. Not yet usable as a daily driver.
+
 **Share your keyboard and mouse across machines.** A modern, Rust-based virtual KVM that lets you seamlessly move your cursor between computers on the same network.
 
 [![CI](https://github.com/Adjoint-uk/cross-control/actions/workflows/ci.yml/badge.svg)](https://github.com/Adjoint-uk/cross-control/actions/workflows/ci.yml)
