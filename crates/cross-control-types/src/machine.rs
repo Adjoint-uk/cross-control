@@ -66,7 +66,7 @@ mod tests {
     fn machine_id_bincode_roundtrip() {
         let id = MachineId::new();
         let config = bincode::config::standard();
-        let bytes = bincode::encode_to_vec(&id, config).unwrap();
+        let bytes = bincode::encode_to_vec(id, config).unwrap();
         let (decoded, _): (MachineId, _) = bincode::decode_from_slice(&bytes, config).unwrap();
         assert_eq!(id, decoded);
     }

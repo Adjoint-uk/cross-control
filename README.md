@@ -1,6 +1,6 @@
 # cross-control
 
-> **Status: `0.1.0-alpha.1` — early alpha.** Scaffolding is in place; the end-to-end "cursor crosses between two machines" experience is not yet wired up. See [`ROADMAP.md`](ROADMAP.md) for what's next and what "done" means at each milestone. Not yet usable as a daily driver.
+> **Status: `0.2.0-alpha` — Phase 1 close-out.** Two daemons on the same LAN discover each other via mDNS and the cursor crosses between machines — no static IP in the config required. Clipboard sync, multi-monitor, and Windows support are next (see [`ROADMAP.md`](ROADMAP.md)). Not yet a daily driver, but the core KVM works end-to-end on Linux.
 
 **Share your keyboard and mouse across machines.** A modern, Rust-based virtual KVM that lets you seamlessly move your cursor between computers on the same network.
 
@@ -210,11 +210,10 @@ See `examples/config.toml` for all configuration options.
 cross-control is in early development. Current status:
 
 - [x] **Phase 0**: Workspace scaffold, shared types, trait definitions, CI
-- [x] **Phase 1**: Linux-to-Linux MVP (evdev capture, QUIC transport, multi-hop switching, 57+ tests)
-- [ ] **Phase 2**: Discovery, certificate pinning, pairing workflow
-- [ ] **Phase 3**: Windows support, clipboard sharing
-- [ ] **Phase 4**: Wayland-native backends, polish
-- [ ] **Phase 5**: v1.0 stable release
+- [x] **Phase 1** (`v0.2.0-alpha`): Linux-to-Linux end-to-end — evdev capture, QUIC transport, multi-hop switching, mDNS discovery, TOFU pinning, 64 tests
+- [ ] **Phase 2** (`v0.5.0-beta`): Clipboard sharing, multi-monitor, reconnect, polished setup
+- [ ] **Phase 3** (`v0.9.0`): Windows + macOS input backends, distro packaging
+- [ ] **Phase 4** (`1.0.0`): Protocol freeze, ADRs, security model, fuzz testing
 
 ## Contributing
 

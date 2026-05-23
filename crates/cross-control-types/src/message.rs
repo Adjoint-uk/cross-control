@@ -221,6 +221,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn ping_pong_roundtrip() {
         let ping = Message::Control(ControlMessage::Ping { seq: 42 });
         let _decoded = bincode_roundtrip(&ping);

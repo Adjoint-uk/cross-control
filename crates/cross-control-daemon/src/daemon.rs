@@ -1,8 +1,12 @@
 //! Core daemon orchestration.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
+use cross_control_discovery::{
+    Discovery, DiscoveryAggregator, DiscoveryEvent, MdnsDiscovery, Peer, StaticDiscovery,
+};
 use cross_control_input::{InputCapture, InputEmulation};
 use cross_control_protocol::QuicTransport;
 use cross_control_types::{
@@ -92,6 +96,14 @@ pub struct Daemon {
     status_tx: watch::Sender<DaemonStatus>,
     /// Full screen adjacency graph: `(screen_name, edge) → neighbor_name`.
     adjacency: HashMap<(String, ScreenEdge), String>,
+    /// Our own TLS cert fingerprint (lowercase hex), advertised via mDNS so
+    /// peers can TOFU-pin before connecting. `None` skips the fingerprint
+    /// TXT record.
+    local_fingerprint: Option<String>,
+    /// Remote addresses we currently have a session with or an in-flight
+    /// outbound handshake to. Used to suppress duplicate dial attempts when
+    /// a peer surfaces via more than one discovery backend.
+    dialed_addrs: Arc<Mutex<HashSet<SocketAddr>>>,
 }
 
 impl Daemon {
@@ -150,12 +162,22 @@ impl Daemon {
             hotkey_pressed: Vec::new(),
             status_tx,
             adjacency,
+            local_fingerprint: None,
+            dialed_addrs: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
     /// Get a clone of the event sender for feeding events into the daemon.
     pub fn event_sender(&self) -> mpsc::Sender<DaemonEvent> {
         self.event_tx.clone()
+    }
+
+    /// Set the local TLS cert fingerprint (lowercase hex) to advertise via
+    /// mDNS. Call this once at startup, after cert generation. If unset, the
+    /// mDNS advert omits the fingerprint TXT, which downgrades peers to
+    /// blind first-contact TOFU.
+    pub fn set_local_fingerprint(&mut self, fingerprint: String) {
+        self.local_fingerprint = Some(fingerprint);
     }
 
     /// Get a status watch receiver for observing daemon state changes.
@@ -240,64 +262,96 @@ impl Daemon {
             });
         }
 
-        // Spawn outbound connection + handshake tasks. Each task connects,
-        // completes the handshake, then sends the ready session back.
-        for sc in &self.config.screens {
-            if let Some(addr_str) = &sc.address {
-                let addr: Option<SocketAddr> = addr_str
+        // Start discovery — mDNS for LAN peers, StaticDiscovery for any
+        // config screens with an explicit address. The aggregator merges the
+        // two streams and dedupes by MachineId; the daemon dedupes by
+        // SocketAddr below so duplicate dial attempts are suppressed even
+        // when MachineIds differ (e.g. static config emits placeholder ids
+        // until handshake confirms the real one).
+        let mut aggregator = DiscoveryAggregator::new();
+
+        // Static peers from config.
+        let static_entries: Vec<(String, SocketAddr, Option<String>)> = self
+            .config
+            .screens
+            .iter()
+            .filter_map(|sc| {
+                let addr_str = sc.address.as_ref()?;
+                let addr: SocketAddr = addr_str
                     .parse()
                     .or_else(|_| format!("{addr_str}:{}", self.config.daemon.port).parse())
-                    .ok();
-                if let Some(addr) = addr {
+                    .ok()?;
+                Some((sc.name.clone(), addr, sc.fingerprint.clone()))
+            })
+            .collect();
+        if !static_entries.is_empty() {
+            aggregator.push(Box::new(StaticDiscovery::from_addresses(static_entries)));
+        }
+
+        // mDNS backend — gated on the daemon.discovery config flag so a user
+        // can disable multicast for networks where it's blocked or undesired.
+        if self.config.daemon.discovery {
+            let mdns = if let Some(fp) = self.local_fingerprint.clone() {
+                MdnsDiscovery::with_fingerprint(fp)
+            } else {
+                MdnsDiscovery::new()
+            };
+            match mdns {
+                Ok(backend) => aggregator.push(Box::new(backend)),
+                Err(e) => warn!(error = %e, "mDNS backend unavailable, continuing without it"),
+            }
+        }
+
+        if !aggregator.is_empty() {
+            if let Err(e) = aggregator
+                .advertise(
+                    self.machine_id,
+                    &self.config.identity.name,
+                    transport_local.port(),
+                )
+                .await
+            {
+                warn!(error = %e, "discovery advertise failed");
+            }
+            match aggregator.browse().await {
+                Ok(mut rx) => {
                     let transport = self.transport.clone();
                     let event_tx = self.event_tx.clone();
-                    let peer_name = sc.name.clone();
                     let our_id = self.machine_id;
                     let our_name = self.config.identity.name.clone();
                     let our_screen = self.screen.clone();
                     let local_devices = self.local_devices.clone();
+                    let dialed = Arc::clone(&self.dialed_addrs);
                     tokio::spawn(async move {
-                        match transport.connect(addr, "cross-control").await {
-                            Ok(conn) => {
-                                match perform_handshake_initiator(
-                                    conn,
-                                    our_id,
-                                    &our_name,
-                                    &our_screen,
-                                    &local_devices,
-                                )
-                                .await
-                                {
-                                    Ok(session) => {
-                                        info!(
-                                            peer = %session.name,
-                                            address = %addr,
-                                            "outbound handshake complete"
+                        while let Some(event) = rx.recv().await {
+                            match event {
+                                DiscoveryEvent::PeerFound(peer) => {
+                                    if !claim_dial(&dialed, peer.address) {
+                                        debug!(
+                                            address = %peer.address,
+                                            "skipping duplicate dial"
                                         );
-                                        let _ = event_tx
-                                            .send(DaemonEvent::SessionReady { session })
-                                            .await;
+                                        continue;
                                     }
-                                    Err(e) => {
-                                        warn!(
-                                            peer = %peer_name,
-                                            address = %addr,
-                                            error = %e,
-                                            "outbound handshake failed"
-                                        );
-                                    }
+                                    spawn_outbound_handshake(
+                                        transport.clone(),
+                                        peer,
+                                        our_id,
+                                        our_name.clone(),
+                                        our_screen.clone(),
+                                        local_devices.clone(),
+                                        event_tx.clone(),
+                                        Arc::clone(&dialed),
+                                    );
                                 }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    address = %addr,
-                                    error = %e,
-                                    "failed to connect to peer"
-                                );
+                                DiscoveryEvent::PeerLost(id) => {
+                                    debug!(peer = %id, "discovery: peer lost");
+                                }
                             }
                         }
                     });
                 }
+                Err(e) => warn!(error = %e, "discovery browse failed"),
             }
         }
 
@@ -380,6 +434,10 @@ impl Daemon {
     fn handle_session_ready(&mut self, session: PeerSession) {
         let peer_id = session.machine_id;
         let peer_name = session.name.clone();
+        let remote_addr = session.connection.remote_address();
+        // Reserve the address so subsequent discovery events for this peer
+        // don't trigger a redundant outbound dial. Released on disconnect.
+        let _ = claim_dial(&self.dialed_addrs, remote_addr);
         self.sessions.insert(peer_id, session);
         self.spawn_control_reader(peer_id);
         info!(peer = %peer_name, id = %peer_id, "session established");
@@ -857,6 +915,9 @@ impl Daemon {
         }
 
         if let Some(mut session) = self.sessions.remove(&machine_id) {
+            // Release the dial slot so this peer can be re-dialed when
+            // discovery surfaces it again.
+            release_dial(&self.dialed_addrs, session.connection.remote_address());
             // Clean up virtual devices
             for (_, virtual_id) in session.device_map.drain() {
                 let _ = self.emulation.destroy_device(virtual_id).await;
@@ -891,6 +952,89 @@ impl Daemon {
     pub fn set_local_devices(&mut self, devices: Vec<DeviceInfo>) {
         self.local_devices = devices;
     }
+}
+
+/// Try to reserve a `SocketAddr` for an outbound dial. Returns `true` if this
+/// caller now owns the dial; `false` if another task got there first.
+fn claim_dial(dialed: &Arc<Mutex<HashSet<SocketAddr>>>, addr: SocketAddr) -> bool {
+    match dialed.lock() {
+        Ok(mut set) => set.insert(addr),
+        // Lock poisoning shouldn't happen here, but if it does, the safe
+        // call is to skip the dial rather than risk a duplicate.
+        Err(_) => false,
+    }
+}
+
+/// Release a previously-claimed dial slot so the address can be retried
+/// (e.g. after a failed handshake or a peer disconnect).
+fn release_dial(dialed: &Arc<Mutex<HashSet<SocketAddr>>>, addr: SocketAddr) {
+    if let Ok(mut set) = dialed.lock() {
+        set.remove(&addr);
+    }
+}
+
+/// Spawn a background task that connects to `peer`, completes the initiator
+/// handshake, and forwards the resulting [`PeerSession`] back to the daemon
+/// via [`DaemonEvent::SessionReady`]. Releases the dial slot on failure.
+#[allow(clippy::too_many_arguments)]
+fn spawn_outbound_handshake(
+    transport: QuicTransport,
+    peer: Peer,
+    our_id: MachineId,
+    our_name: String,
+    our_screen: ScreenGeometry,
+    local_devices: Vec<DeviceInfo>,
+    event_tx: mpsc::Sender<DaemonEvent>,
+    dialed: Arc<Mutex<HashSet<SocketAddr>>>,
+) {
+    tokio::spawn(async move {
+        let addr = peer.address;
+        match transport.connect(addr, "cross-control").await {
+            Ok(conn) => {
+                match perform_handshake_initiator(
+                    conn,
+                    our_id,
+                    &our_name,
+                    &our_screen,
+                    &local_devices,
+                )
+                .await
+                {
+                    Ok(session) => {
+                        info!(
+                            peer = %session.name,
+                            address = %addr,
+                            "outbound handshake complete"
+                        );
+                        if event_tx
+                            .send(DaemonEvent::SessionReady { session })
+                            .await
+                            .is_err()
+                        {
+                            release_dial(&dialed, addr);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            peer = %peer.name,
+                            address = %addr,
+                            error = %e,
+                            "outbound handshake failed"
+                        );
+                        release_dial(&dialed, addr);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    address = %addr,
+                    error = %e,
+                    "failed to connect to peer"
+                );
+                release_dial(&dialed, addr);
+            }
+        }
+    });
 }
 
 /// Perform a responder handshake in a background task (accept bidi stream,

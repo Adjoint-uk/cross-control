@@ -1,14 +1,24 @@
-//! mDNS/DNS-SD zero-config discovery for cross-control.
+//! Zero-config peer discovery for cross-control.
 //!
-//! Defines the [`Discovery`] trait for advertising and browsing cross-control
-//! peers on the local network. The mdns-sd backend will be added in Phase 2.
+//! The [`Discovery`] trait abstracts over discovery backends. Two ship today:
+//!
+//! - [`mdns::MdnsDiscovery`] — DNS-SD over multicast for LAN peers
+//! - [`aggregator::StaticDiscovery`] — a backend that emits a fixed peer list
+//!   from the daemon config
+//!
+//! [`aggregator::DiscoveryAggregator`] composes backends so the daemon only
+//! sees one merged, de-duplicated peer stream.
 
 use async_trait::async_trait;
 use cross_control_types::MachineId;
 
+pub mod aggregator;
 pub mod error;
+pub mod mdns;
 
+pub use aggregator::{DiscoveryAggregator, StaticDiscovery};
 pub use error::DiscoveryError;
+pub use mdns::MdnsDiscovery;
 
 /// A discovered peer on the network.
 #[derive(Debug, Clone)]
@@ -19,7 +29,7 @@ pub struct Peer {
     pub name: String,
     /// Network address (host:port).
     pub address: std::net::SocketAddr,
-    /// TLS certificate fingerprint (SHA-256).
+    /// TLS certificate fingerprint (SHA-256, lowercase hex).
     pub fingerprint: Option<String>,
 }
 

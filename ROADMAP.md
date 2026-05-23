@@ -2,30 +2,30 @@
 
 The road from `0.1.0-alpha.1` to `1.0.0`.
 
-> **Next up — Phase 1 sprint:** implement the `mdns-sd` discovery backend in `cross-control-discovery` and wire it into the daemon. The dep is reserved at the workspace level but the crate is trait-only. Steps: add `mdns-sd` to `crates/cross-control-discovery/Cargo.toml` → create `src/mdns.rs` implementing the `Discovery` trait → loopback advertise+browse test → plumb into `cross-control-daemon` startup so peers without a static `address` are discovered automatically. This unblocks the v0.2.0-alpha demo.
+> **Next up — Phase 2 opener:** implement the **clipboard text backend**. The `cross-control-clipboard` crate is trait-only; `arboard` (X11/macOS) and `wl-clipboard-rs` (Wayland) are mature crates. Steps: add deps → implement `ClipboardProvider` per platform → wire clipboard sync into the daemon's session lifecycle (sync on enter/leave). This is the first step toward `v0.5.0-beta` "it's pleasant."
 
 This document is the single source of truth for *what's next* and *what "done" means* at each milestone. The competitive reasoning behind cross-control's existence lives in [`docs/research-kvm-landscape.md`](docs/research-kvm-landscape.md); the architectural decisions live in [`docs/adr/`](docs/adr/). This file just orders the work.
 
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
-## Where we already are (audit, 2026-04-09)
+## Where we already are (audit, 2026-05-23)
 
-The codebase is much further along than the version number suggests. As of `cf42618`:
+The codebase is past the v0.2.0-alpha code milestone — only hardware bring-up and the demo remain.
 
-- **57 tests passing** across the workspace (`cargo test --workspace`), CI green.
-- **`cross-control-types`** (994 LOC, 33 tests) — shared event/device/geometry types, done.
-- **`cross-control-protocol`** (498 LOC) — QUIC connection, TLS, wire format, multi-stream control/input. Has `quic_roundtrip.rs` integration test.
-- **`cross-control-input`** (1370 LOC) — full Linux backend: `linux/{capture,emulation,keymap}.rs` over evdev/uinput, plus a `mock` backend for tests.
-- **`cross-control-daemon`** (1631 LOC) — `daemon.rs` is 930 lines and implements: async handshake (initiator + responder), edge-based barrier crossing, multi-hop adjacency routing, EnterAck flow, hotkey release, virtual device announce/map/destroy, ping/pong, entry-edge bounce suppression, graceful shutdown. `daemon_integration.rs` covers it.
-- **`cross-control-cli`** (269 LOC) — `start`, `stop`, `status`, `generate-cert`, `pair` subcommands wired.
+- **64 tests passing** across the workspace (`cargo test --workspace`) + 1 ignored (`mdns_loopback`, needs multicast). CI green. Clippy clean under `-D warnings`.
+- **`cross-control-types`** (994 LOC, 33 tests) — shared event/device/geometry types.
+- **`cross-control-protocol`** (498 LOC) — QUIC connection, TLS, wire format, multi-stream control/input.
+- **`cross-control-input`** (1370 LOC) — full Linux backend over evdev/uinput, plus a `mock` backend for tests.
+- **`cross-control-daemon`** (~1700 LOC) — async handshake, edge-based barrier crossing, multi-hop adjacency routing, EnterAck flow, hotkey release, virtual device announce/map/destroy, ping/pong, entry-edge bounce suppression. Now also: discovery-driven outbound dials with per-address dedupe.
+- **`cross-control-discovery`** (~500 LOC) — `Discovery` trait + `MdnsDiscovery` (mdns-sd, fingerprint TXT records) + `DiscoveryAggregator` (multi-backend fan-in with `MachineId` dedupe) + `StaticDiscovery` (wraps config peers).
+- **`cross-control-cli`** (269 LOC) — `start`, `stop`, `status`, `generate-cert`, `pair`. Wires the cert fingerprint into the daemon for mDNS advertising.
 - **`cross-control-certgen`** (125 LOC) — TLS cert generation + SHA-256 fingerprinting.
 - **`cross-control-tui-test`** (884 LOC) — TUI harness for visual testing.
 
-The two genuinely empty crates:
-- **`cross-control-discovery`** (74 LOC) — *trait only*, no mDNS backend. Source comment: *"mdns-sd backend will be added in Phase 2."*
-- **`cross-control-clipboard`** (29 LOC) — *trait only*, no backend.
+The remaining empty crate:
+- **`cross-control-clipboard`** (29 LOC) — *trait only*, no backend. Phase 2's first task.
 
-**Implication:** Phase 1 is much shorter than originally written. We should be able to cut a `v0.2.0-alpha` release that *actually works* on two real Linux machines after a focused sprint on discovery + a real two-machine validation + a demo.
+**Implication:** the v0.2.0-alpha *code* is done. What's left for the tag is bring-up on real hardware, a recorded asciinema demo, and pushing the tag.
 
 ---
 
@@ -33,12 +33,13 @@ The two genuinely empty crates:
 
 **Success criterion:** two Linux laptops on the same LAN find each other automatically, pair on first contact, and the cursor crosses between them. Recorded as asciinema, linked from the README.
 
-- [ ] **Implement `mdns-sd` backend in `cross-control-discovery`** — the only Phase 1 code stub. Wire it into the daemon's startup so peers don't need static `address = "..."` in the config.
-- [ ] **Real two-machine bring-up.** Run two daemons on two physical Linux machines (not just the integration test), prove the cursor crosses, write down every paper cut hit during setup.
+- [x] **Implement `mdns-sd` backend in `cross-control-discovery`** — `MdnsDiscovery` + `DiscoveryAggregator` + `StaticDiscovery` shipped. Daemon now discovers peers without static `address` entries.
+- [x] **CHANGELOG entry** for `[0.2.0-alpha]` describing the working end-to-end story in plain English.
+- [x] **ADR 0002** — TOFU certificate pinning model written.
+- [ ] **Real two-machine bring-up.** Requires two physical Linux boxes — hand-off task. Document every paper cut in `setup-guide.md`.
 - [ ] **TOFU pairing UX polish.** The CLI `pair` subcommand exists and certgen works — verify the first-contact flow is sane (prompt, fingerprint, pin) and document it.
-- [ ] **Edge-detection sanity pass.** `daemon.rs` `check_barrier_crossing` and the multi-hop adjacency code are implemented but not yet validated outside of tests with real cursor motion. Confirm or fix.
+- [ ] **Edge-detection sanity pass.** `check_barrier_crossing` and multi-hop adjacency code are integration-tested but not yet validated with real cursor motion on real hardware.
 - [ ] **asciinema demo** committed under `docs/demos/cursor-crossing.cast` and linked from README.
-- [ ] **CHANGELOG entry** for `[0.2.0-alpha]` describing the working end-to-end story in plain English.
 - [ ] **Tag and release** `v0.2.0-alpha` once the demo runs.
 
 ## Phase 2 — "It's pleasant" → `v0.5.0-beta`
@@ -76,7 +77,7 @@ The two genuinely empty crates:
 
 - [ ] **Protocol freeze** — wire format and message types stable, with version negotiation for forward compatibility
 - [x] ADR 0001 — QUIC as the only transport
-- [ ] ADR 0002 — TOFU certificate pinning, no CA
+- [x] ADR 0002 — TOFU certificate pinning, no CA
 - [ ] ADR 0003 — Wayland-native via evdev/uinput, not XTest
 - [ ] ADR 0004 — protocol freeze and version negotiation
 - [ ] `docs/SECURITY-MODEL.md` — threat model, what TOFU does and does not protect against, key rotation story

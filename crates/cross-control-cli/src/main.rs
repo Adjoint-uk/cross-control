@@ -146,6 +146,11 @@ async fn start_daemon(config_path: Option<&str>) -> anyhow::Result<()> {
     // Create and run daemon
     let mut daemon = Daemon::new(config, machine_id, transport, capture, emulation);
     daemon.set_local_devices(local_devices);
+    if let Ok(fingerprint) = cross_control_certgen::fingerprint_from_pem(&cert_pem) {
+        // Strip the "SHA256:" prefix for TXT compactness; peers reconstruct it.
+        let fp = fingerprint.strip_prefix("SHA256:").unwrap_or(&fingerprint);
+        daemon.set_local_fingerprint(fp.to_lowercase());
+    }
 
     let event_tx = daemon.event_sender();
 

@@ -1,5 +1,7 @@
 //! Integration tests exercising the full daemon event loop on loopback.
 
+#![allow(clippy::similar_names, clippy::doc_markdown, clippy::too_many_lines)]
+
 use std::net::SocketAddr;
 use std::time::Duration;
 

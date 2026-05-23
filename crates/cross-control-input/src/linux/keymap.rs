@@ -333,6 +333,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn roundtrip_all_mapped_keycodes() {
         let keys = [
             EvdevKey::KEY_A,

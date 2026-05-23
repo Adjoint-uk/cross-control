@@ -65,23 +65,91 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ### Firewall
 
-cross-control uses UDP port 24800 by default. Open it on both machines:
+cross-control uses **UDP 24800** for the QUIC transport and **UDP 5353** for mDNS discovery. Open both on every machine:
 
 ```bash
 # UFW (Ubuntu)
 sudo ufw allow 24800/udp
+sudo ufw allow 5353/udp
 
 # firewalld (Fedora)
 sudo firewall-cmd --add-port=24800/udp --permanent
+sudo firewall-cmd --add-port=5353/udp --permanent
 sudo firewall-cmd --reload
 
 # iptables
 sudo iptables -A INPUT -p udp --dport 24800 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 5353 -j ACCEPT
 ```
 
-## Quick Start: Two Linux Machines
+On networks where mDNS is blocked (some enterprise WiFi, captive portals) set `[daemon] discovery = false` in `config.toml` and fall back to static `[[screens]]` entries with `address = "..."`.
 
-This example sets up a workstation (left) and laptop (right).
+## Zero-Config Quick Start (mDNS)
+
+The fastest way to get two machines talking. Skip if your network blocks mDNS — use the static-config flow below instead.
+
+### 1. Install on both machines and generate certs
+
+```bash
+cargo install --path crates/cross-control-cli
+cross-control generate-cert --output ~/.config/cross-control/
+```
+
+Write down the SHA-256 fingerprint each machine prints. You will compare them in step 3 below.
+
+### 2. Minimal config on each machine
+
+```toml
+# ~/.config/cross-control/config.toml
+[identity]
+name = "workstation"   # or "laptop" on the other machine
+
+[daemon]
+discovery = true        # mDNS on (this is the default)
+screen_width = 1920
+screen_height = 1080
+
+# Optional: declare which side the other machine is on. Without this,
+# cross-control discovers the peer but doesn't know where to hand off the cursor.
+[[screens]]
+name = "laptop"
+position = "Right"
+# no `address =` — discovery fills it in
+# `fingerprint =` is optional; if set, refuses connections that don't match
+```
+
+### 3. Start both daemons
+
+```bash
+cross-control start
+```
+
+Within a few seconds each daemon should report finding the other. Confirm:
+
+```bash
+cross-control status
+```
+
+### 4. First-contact fingerprint check (TOFU)
+
+Each daemon's mDNS advertisement carries the local cert fingerprint in the `fp` TXT record. When two daemons first see each other, compare the discovered fingerprints to the ones you wrote down in step 1. If they match, pin them by adding to the config:
+
+```toml
+[[screens]]
+name = "laptop"
+position = "Right"
+fingerprint = "ab12cd34..."   # what you verified
+```
+
+Once pinned, **any future certificate mismatch refuses the connection** with an SSH-style identity-changed error. This is the trust-on-first-use model — see [ADR 0002](adr/0002-tofu-pairing.md) for the full threat model and what TOFU does *not* protect against.
+
+### 5. Use it
+
+Move the cursor to the configured edge. Press **Ctrl+Shift+Escape** to release.
+
+## Static Config: Two Linux Machines
+
+Use this when mDNS is blocked, or when you want the network address fixed. This example sets up a workstation (left) and laptop (right).
 
 ### 1. Generate certificates on both machines
 
