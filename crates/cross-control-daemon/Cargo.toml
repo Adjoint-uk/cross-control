@@ -32,6 +32,7 @@ hostname = "0.4"
 [dev-dependencies]
 toml = { workspace = true }
 cross-control-input = { workspace = true, features = ["mock"] }
+cross-control-clipboard = { workspace = true, features = ["mock"] }
 cross-control-certgen = { workspace = true }
 cross-control-protocol = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

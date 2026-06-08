@@ -8,6 +8,13 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = ["arboard"]
+# Real backend over arboard (X11, macOS, Windows, wlroots-based Wayland).
+arboard = ["dep:arboard"]
+# In-memory backend for tests and headless daemon runs.
+mock = []
+
 [dependencies]
 cross-control-types = { workspace = true }
 tokio = { workspace = true }
@@ -15,6 +22,10 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+arboard = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

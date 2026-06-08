@@ -151,6 +151,13 @@ async fn start_daemon(config_path: Option<&str>) -> anyhow::Result<()> {
         let fp = fingerprint.strip_prefix("SHA256:").unwrap_or(&fingerprint);
         daemon.set_local_fingerprint(fp.to_lowercase());
     }
+    // Install the system clipboard backend if a display is reachable. A
+    // missing display is normal on headless boxes — log and run without
+    // clipboard sync.
+    match cross_control_clipboard::ArboardClipboard::new() {
+        Ok(cb) => daemon.set_clipboard(Box::new(cb)),
+        Err(e) => tracing::warn!(error = %e, "clipboard backend unavailable; running without sync"),
+    }
 
     let event_tx = daemon.event_sender();
 

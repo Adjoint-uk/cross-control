@@ -5,14 +5,15 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use cross_control_clipboard::{ClipboardProvider, MockClipboard};
 use cross_control_daemon::config::{
     Config, DaemonConfig, IdentityConfig, ScreenAdjacency, ScreenConfig,
 };
 use cross_control_daemon::{Daemon, DaemonEvent, DaemonStatus};
 use cross_control_input::mock::{MockCapture, MockEmulation, MockEmulationHandle};
 use cross_control_types::{
-    ButtonState, CapturedEvent, DeviceCapability, DeviceId, DeviceInfo, InputEvent, KeyCode,
-    MachineId, Position,
+    ButtonState, CapturedEvent, ClipboardContent, DeviceCapability, DeviceId, DeviceInfo,
+    InputEvent, KeyCode, MachineId, Position,
 };
 use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
@@ -23,12 +24,14 @@ struct TestPair {
     // Daemon A (initiator / left)
     feed_a: mpsc::Sender<CapturedEvent>,
     emulation_a: MockEmulationHandle,
+    clipboard_a: MockClipboard,
     status_a: watch::Receiver<DaemonStatus>,
     shutdown_a: mpsc::Sender<DaemonEvent>,
 
     // Daemon B (responder / right)
     feed_b: mpsc::Sender<CapturedEvent>,
     emulation_b: MockEmulationHandle,
+    clipboard_b: MockClipboard,
     status_b: watch::Receiver<DaemonStatus>,
     shutdown_b: mpsc::Sender<DaemonEvent>,
 
@@ -134,6 +137,9 @@ async fn setup_pair() -> TestPair {
     let emulation_b_backend = MockEmulation::new();
     let emulation_b = emulation_b_backend.handle();
 
+    let clipboard_a = MockClipboard::new();
+    let clipboard_b = MockClipboard::new();
+
     // Build daemons
     let mut daemon_a = Daemon::new(
         config_a,
@@ -143,6 +149,7 @@ async fn setup_pair() -> TestPair {
         Box::new(emulation_a_backend),
     );
     daemon_a.set_local_devices(test_devices());
+    daemon_a.set_clipboard(Box::new(clipboard_a.clone()));
     let status_a = daemon_a.status_receiver();
     let shutdown_a = daemon_a.event_sender();
 
@@ -154,6 +161,7 @@ async fn setup_pair() -> TestPair {
         Box::new(emulation_b_backend),
     );
     daemon_b.set_local_devices(test_devices());
+    daemon_b.set_clipboard(Box::new(clipboard_b.clone()));
     let status_b = daemon_b.status_receiver();
     let shutdown_b = daemon_b.event_sender();
 
@@ -176,10 +184,12 @@ async fn setup_pair() -> TestPair {
     TestPair {
         feed_a,
         emulation_a,
+        clipboard_a,
         status_a,
         shutdown_a,
         feed_b,
         emulation_b,
+        clipboard_b,
         status_b,
         shutdown_b,
         handle_a,
@@ -981,4 +991,66 @@ async fn test_multi_hop_a_to_b_to_c() {
     .expect("B should be released after multi-hop");
 
     cluster.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_clipboard_text_syncs_on_control_handoff() {
+    let mut pair = setup_pair().await;
+
+    // Pre-populate A's clipboard. When A starts controlling B, the daemon
+    // should offer this content and B should request + apply it.
+    pair.clipboard_a
+        .set(ClipboardContent::text("hello from A"))
+        .await
+        .expect("set A clipboard");
+
+    // Wait for both daemons to have a session.
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake A");
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake B");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Drive A's cursor to the right edge so the daemon initiates control.
+    for _ in 0..5 {
+        let event = CapturedEvent {
+            device_id: DeviceId(2),
+            timestamp_us: 1000,
+            event: InputEvent::MouseMove { dx: 500, dy: 0 },
+        };
+        pair.feed_a.send(event).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Wait for A to become controlling — this is the trigger point for the
+    // clipboard offer.
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("A should be controlling");
+
+    // Poll B's clipboard until it gets the synced content. The handoff
+    // crosses three message round-trips (Offer → Request → Data) so allow
+    // up to 2 seconds.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut got: Option<String> = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(content) = pair.clipboard_b.get().await {
+            if let Some(s) = content.as_text() {
+                got = Some(s.to_string());
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(got.as_deref(), Some("hello from A"));
+
+    pair.shutdown().await;
 }

@@ -94,6 +94,12 @@ pub enum ControlMessage {
         seq: u64,
     },
 
+    /// Clipboard synchronisation traffic. Travels on the control stream so
+    /// the small text-clipboard payload doesn't need its own QUIC stream.
+    /// A dedicated clipboard stream is planned for image/large-payload
+    /// support (see ROADMAP Phase 2.5).
+    Clipboard(ClipboardMessage),
+
     /// Graceful disconnect.
     Bye,
 }

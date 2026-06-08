@@ -4,14 +4,15 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use cross_control_clipboard::ClipboardProvider;
 use cross_control_discovery::{
     Discovery, DiscoveryAggregator, DiscoveryEvent, MdnsDiscovery, Peer, StaticDiscovery,
 };
 use cross_control_input::{InputCapture, InputEmulation};
 use cross_control_protocol::QuicTransport;
 use cross_control_types::{
-    CapturedEvent, ControlMessage, DeviceInfo, InputEvent, InputMessage, KeyCode, MachineId,
-    ScreenEdge, ScreenGeometry,
+    CapturedEvent, ClipboardFormat, ClipboardMessage, ControlMessage, DeviceInfo, InputEvent,
+    InputMessage, KeyCode, MachineId, ScreenEdge, ScreenGeometry,
 };
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -104,6 +105,10 @@ pub struct Daemon {
     /// outbound handshake to. Used to suppress duplicate dial attempts when
     /// a peer surfaces via more than one discovery backend.
     dialed_addrs: Arc<Mutex<HashSet<SocketAddr>>>,
+    /// Local clipboard backend, optional so headless or test daemons can
+    /// skip it. When `Some`, the daemon syncs the text clipboard on each
+    /// control hand-off.
+    clipboard: Option<Box<dyn ClipboardProvider>>,
 }
 
 impl Daemon {
@@ -164,6 +169,7 @@ impl Daemon {
             adjacency,
             local_fingerprint: None,
             dialed_addrs: Arc::new(Mutex::new(HashSet::new())),
+            clipboard: None,
         }
     }
 
@@ -178,6 +184,14 @@ impl Daemon {
     /// blind first-contact TOFU.
     pub fn set_local_fingerprint(&mut self, fingerprint: String) {
         self.local_fingerprint = Some(fingerprint);
+    }
+
+    /// Install a clipboard backend. When set, the daemon syncs the local
+    /// text clipboard to the remote peer on every control hand-off
+    /// (controller → controlled). Skip this call to run without clipboard
+    /// sync — handy in headless tests.
+    pub fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardProvider>) {
+        self.clipboard = Some(clipboard);
     }
 
     /// Get a status watch receiver for observing daemon state changes.
@@ -712,6 +726,10 @@ impl Daemon {
                     session.set_controlling();
                 }
                 self.controlling = Some(machine_id);
+                // Offer our clipboard to the new controller — they'll Request
+                // the format they want. Skipped if no clipboard backend is
+                // installed or if the local clipboard is empty.
+                self.offer_clipboard(machine_id).await;
             }
             ControlMessage::Leave { edge, position } => {
                 if let Some(session) = self.sessions.get_mut(&machine_id) {
@@ -816,12 +834,91 @@ impl Daemon {
             ControlMessage::Pong { seq } => {
                 debug!(peer = %machine_id, seq, "received pong");
             }
+            ControlMessage::Clipboard(cb_msg) => {
+                self.handle_clipboard_message(machine_id, cb_msg).await;
+            }
             ControlMessage::Bye => {
                 info!(peer = %machine_id, "peer sent Bye");
                 self.handle_peer_disconnected(machine_id).await;
             }
             _ => {
                 debug!(peer = %machine_id, ?msg, "unhandled control message");
+            }
+        }
+    }
+
+    /// Read the local clipboard and send an `Offer` to the given peer.
+    /// Silent no-op if no clipboard backend is installed, the clipboard is
+    /// empty, or the peer session is gone.
+    async fn offer_clipboard(&mut self, peer_id: MachineId) {
+        let Some(clipboard) = self.clipboard.as_ref() else {
+            return;
+        };
+        let formats = match clipboard.available_formats().await {
+            Ok(f) if !f.is_empty() => f,
+            Ok(_) => return,
+            Err(e) => {
+                debug!(error = %e, "clipboard available_formats failed; skipping offer");
+                return;
+            }
+        };
+        let size_hint = clipboard.get().await.map_or(0, |c| c.size() as u64);
+        let offer = ControlMessage::Clipboard(ClipboardMessage::Offer { formats, size_hint });
+        if let Some(session) = self.sessions.get_mut(&peer_id) {
+            if let Err(e) = session.control_tx.send(&offer).await {
+                debug!(peer = %peer_id, error = %e, "failed to send clipboard offer");
+            }
+        }
+    }
+
+    async fn handle_clipboard_message(&mut self, peer_id: MachineId, msg: ClipboardMessage) {
+        match msg {
+            ClipboardMessage::Offer { formats, size_hint } => {
+                debug!(peer = %peer_id, ?formats, size_hint, "received clipboard offer");
+                // Prefer PlainText for now. HTML/PNG round-trip is defined in
+                // the wire protocol but no backend yet sets them.
+                let format = if formats.contains(&ClipboardFormat::PlainText) {
+                    ClipboardFormat::PlainText
+                } else {
+                    return;
+                };
+                let request = ControlMessage::Clipboard(ClipboardMessage::Request { format });
+                if let Some(session) = self.sessions.get_mut(&peer_id) {
+                    if let Err(e) = session.control_tx.send(&request).await {
+                        debug!(peer = %peer_id, error = %e, "failed to send clipboard request");
+                    }
+                }
+            }
+            ClipboardMessage::Request { format } => {
+                let Some(clipboard) = self.clipboard.as_ref() else {
+                    return;
+                };
+                if format != ClipboardFormat::PlainText {
+                    debug!(?format, "clipboard request for unsupported format");
+                    return;
+                }
+                let content = match clipboard.get().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        debug!(error = %e, "clipboard get failed; ignoring request");
+                        return;
+                    }
+                };
+                let data = ControlMessage::Clipboard(ClipboardMessage::Data(content));
+                if let Some(session) = self.sessions.get_mut(&peer_id) {
+                    if let Err(e) = session.control_tx.send(&data).await {
+                        debug!(peer = %peer_id, error = %e, "failed to send clipboard data");
+                    }
+                }
+            }
+            ClipboardMessage::Data(content) => {
+                let Some(clipboard) = self.clipboard.as_mut() else {
+                    return;
+                };
+                debug!(peer = %peer_id, size = content.size(), format = ?content.format, "received clipboard data");
+                if let Err(e) = clipboard.set(content).await {
+                    warn!(peer = %peer_id, error = %e, "failed to set local clipboard");
+                }
             }
         }
     }

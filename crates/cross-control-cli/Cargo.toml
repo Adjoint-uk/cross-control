@@ -19,6 +19,7 @@ linux = ["cross-control-daemon/linux"]
 [dependencies]
 cross-control-daemon = { workspace = true }
 cross-control-certgen = { workspace = true }
+cross-control-clipboard = { workspace = true, features = ["arboard"] }
 cross-control-input = { workspace = true }
 cross-control-protocol = { workspace = true }
 cross-control-types = { workspace = true }

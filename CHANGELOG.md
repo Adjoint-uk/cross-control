@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase 2 opener: clipboard text sync
+
+- **`cross-control-clipboard` backends.** `ArboardClipboard` (default feature `arboard`) for the real system clipboard on X11, macOS, Windows, and wlroots-based Wayland; `MockClipboard` (feature `mock`) for tests and headless daemon runs. The trait now requires `Send + Sync + 'static` so the daemon can hold `&self.clipboard` across `.await` on a multi-thread runtime.
+- **Daemon clipboard wiring.** On every control hand-off (controller side receives `EnterAck`), the controller sends `Clipboard::Offer`; the controlled side replies with `Clipboard::Request`; the controller answers with `Clipboard::Data`. The controlled side writes it to the local clipboard. Wired through a new `Daemon::set_clipboard` setter — leave it unset to run without clipboard sync (used by the integration tests that don't exercise it).
+- **`ControlMessage::Clipboard(ClipboardMessage)` wire variant.** Clipboard traffic rides the existing control stream for now — small text payloads don't justify a third QUIC stream. A dedicated clipboard stream is queued for Phase 2.5 when image/HTML support lands.
+- **CLI integration.** `cross-control start` constructs an `ArboardClipboard` at startup; missing display server (headless host) logs a warning and runs without sync rather than refusing to start.
+
+### Known limitations (clipboard)
+
+- Text-only (`ClipboardFormat::PlainText`). HTML and PNG are defined in the wire protocol and accepted by the trait but neither backend implements them yet.
+- Wayland coverage is limited to wlroots-based compositors (Sway, Hyprland, river) via `arboard`. GNOME/KDE on Wayland use a different protocol — `wl-clipboard-rs` integration is the planned follow-up.
+- One-shot sync at hand-off, not continuous. If the controller's clipboard changes *while* it is controlling the remote, the new content does not propagate until the next hand-off. Continuous sync via the watch API is a follow-up.
+
+### Test coverage
+
+- 70 tests pass workspace-wide (was 64 at `v0.2.0-alpha` code-complete). 5 new in `cross-control-clipboard::mock`, 1 new in `cross-control-daemon::tests::daemon_integration` (`test_clipboard_text_syncs_on_control_handoff`). Still 2 ignored (`mdns_loopback` requires multicast, `arboard_backend::tests::construct_and_set_get_text` requires a display server).
+
 ## [0.2.0-alpha] — Phase 1 close-out
 
 Two cross-control daemons on the same LAN now find each other automatically — no `address = "..."` required in the config. The mDNS advert carries the machine's TLS cert fingerprint so peers can pin before the first QUIC handshake.
