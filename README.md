@@ -1,6 +1,6 @@
 # cross-control
 
-> **Status: `0.2.0-alpha` — Phase 1 close-out.** Two daemons on the same LAN discover each other via mDNS and the cursor crosses between machines — no static IP in the config required. Clipboard sync, multi-monitor, and Windows support are next (see [`ROADMAP.md`](ROADMAP.md)). Not yet a daily driver, but the core KVM works end-to-end on Linux.
+> **Status: `0.2.0-alpha` — Phase 1 close-out.** Two daemons on the same LAN discover each other via mDNS and the cursor crosses between machines — no static IP in the config required. Clipboard sync, multi-monitor, and Windows support are next (see [`DESIGN.md`](DESIGN.md) and the [issues](https://github.com/Adjoint-uk/cross-control/issues)). Not yet a daily driver, but the core KVM works end-to-end on Linux.
 
 **Share your keyboard and mouse across machines.** A modern, Rust-based virtual KVM that lets you seamlessly move your cursor between computers on the same network.
 
