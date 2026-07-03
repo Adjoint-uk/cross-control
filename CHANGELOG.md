@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#9]: https://github.com/Adjoint-uk/cross-control/issues/9
 [#13]: https://github.com/Adjoint-uk/cross-control/issues/13
 
+### Added — loopback demo and systemd user service ([#11])
+
+- **`loopback` example.** `cargo run -p cross-control-daemon --example loopback` runs two daemons in one process on `127.0.0.1` and drives a full session — QUIC handshake, device announce, edge-based cursor crossing, and input forwarding — with no second machine, no root, and no display server. It asserts the forwarded keypress lands on the receiving daemon and narrates each step. Built with `--features linux -- --real`, the receiver injects into a real uinput device so the cursor visibly moves. This makes everything *between* the two physical ends reproducible on one box; only real evdev capture and a live compositor remain for hardware bring-up.
+- **systemd user service, fixed up ([#11]).** `systemd/cross-control.service` is now a correct, documented user unit: dropped the `network-online.target` ordering (unavailable in the user manager; the daemon reconnects on its own), added install/prerequisite comments, and reconciled the copy `install.sh` generates so the two no longer diverge. README gains a "Run as a service" section covering enable, logs, lingering, and the `input`/`uinput` prerequisites.
+
+[#11]: https://github.com/Adjoint-uk/cross-control/issues/11
+
 ### Added — Phase 2 opener: clipboard text sync
 
 - **`cross-control-clipboard` backends.** `ArboardClipboard` (default feature `arboard`) for the real system clipboard on X11, macOS, Windows, and wlroots-based Wayland; `MockClipboard` (feature `mock`) for tests and headless daemon runs. The trait now requires `Send + Sync + 'static` so the daemon can hold `&self.clipboard` across `.await` on a multi-thread runtime.

@@ -101,16 +101,21 @@ setup_systemd() {
     fi
 
     mkdir -p "$service_dir"
+    # Keep this in sync with systemd/cross-control.service. No network-online
+    # ordering — that target isn't available in the user manager and the
+    # daemon reconnects on its own. ExecStart is pinned to the real install
+    # path so it works regardless of the user manager's PATH.
     cat > "${service_dir}/cross-control.service" <<UNIT
 [Unit]
 Description=cross-control virtual KVM daemon
-After=network.target
+Documentation=https://github.com/${REPO}
 
 [Service]
 Type=simple
 ExecStart=${install_dir}/${BIN_NAME} start
 Restart=on-failure
 RestartSec=5
+Environment=RUST_LOG=info
 
 [Install]
 WantedBy=default.target
@@ -119,6 +124,7 @@ UNIT
     systemctl --user daemon-reload
     info "Systemd service installed at ${service_dir}/cross-control.service"
     info "  Enable: systemctl --user enable --now cross-control"
+    info "  (Linger to run before login: sudo loginctl enable-linger \$USER)"
 }
 
 main() {
