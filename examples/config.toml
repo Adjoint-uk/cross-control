@@ -4,10 +4,14 @@
 [daemon]
 port = 24800
 bind = "0.0.0.0"
-discovery = true
+discovery = true       # mDNS auto-discovery; set false on networks that block multicast
 log_level = "info"
+screen_width = 1920    # this machine's screen size, used for edge detection
+screen_height = 1080
 
 [identity]
+# This machine's name. Must be unique across your setup and must differ from
+# every [[screens]] name below. Defaults to the system hostname if omitted.
 name = "workstation-left"
 
 [input]
@@ -18,11 +22,35 @@ release_hotkey = ["LeftCtrl", "LeftShift", "Escape"]
 enabled = true
 max_size = 10485760  # 10 MiB
 
-# Define remote screens and their position relative to this machine.
-# You can have multiple [[screens]] entries for multi-machine setups.
+# ── Screen layout ────────────────────────────────────────────────────────
+#
+# [[screens]] declares a machine placed directly next to THIS one, and which
+# edge of this screen the cursor crosses to reach it. `position` is one of
+# Left, Right, Above, Below. Each edge can hold at most one direct neighbor.
+#
+# `address` is optional: with mDNS discovery on, peers are found automatically
+# and you only need `position`. Set `address` to pin a static host (or on
+# networks without multicast). `fingerprint` pins the peer's TLS cert (TOFU) —
+# fill it in after the first pairing; see `cross-control status` for your own.
 
 [[screens]]
 name = "laptop-right"
-address = "192.168.1.42"
 position = "Right"
-fingerprint = "SHA256:ab:cd:ef:..."  # Set after first pairing
+# address = "192.168.1.42"                 # optional with mDNS
+# fingerprint = "SHA256:ab:cd:ef:..."      # set after first pairing
+
+# ── Multi-hop layout (optional) ──────────────────────────────────────────
+#
+# [[screen_adjacency]] describes edges BETWEEN OTHER screens, so the cursor
+# can hop across a chain of machines. Each entry reads: leaving `screen` by
+# its `position` edge lands on `neighbor`. Inverse edges are generated
+# automatically, so you only list each link once.
+#
+# Example three-machine row —  [workstation-left] | [laptop-right] | [tablet]:
+# the cursor goes left→right off this machine onto laptop-right (above), then
+# right again off laptop-right onto tablet.
+#
+# [[screen_adjacency]]
+# screen = "laptop-right"
+# neighbor = "tablet"
+# position = "Right"

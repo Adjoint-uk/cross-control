@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase 2: live status readout ([#13]) and TOML layout validation ([#9])
+
+- **`cross-control status` now shows live peers, latency, and focus.** The daemon writes a `StatusSnapshot` (peers with name/state/latency, plus which peer holds focus) to `cross-control.status.json` in the runtime dir every couple of seconds; the `status` command reads and renders it as a table. This is the CLI↔daemon channel the previous `status` lacked — it mirrors the PID-file pattern rather than standing up a full IPC socket. A richer query/subscribe channel can replace the file later without changing the rendered output.
+- **Real latency, not a stub.** The daemon pings each peer on a 2-second cadence and records the round-trip time when the `Pong` returns (a new `LatencyTracker` per session). `status` shows `—` until the first ping completes, then `N ms`.
+- **`Config::validate()` for screen layouts.** Loading a config now rejects layouts that would silently misroute the cursor: empty or duplicate screen names, a screen sharing this machine's `identity.name`, two screens on the same local edge, self-loop adjacency edges, one screen given two neighbors on the same edge, and `[[screen_adjacency]]` blocks that never connect back to this machine (a typo or dead island). Multi-hop screens introduced only via `[[screen_adjacency]]` are correctly accepted — reachability is checked to a fixpoint, not against `[[screens]]` alone.
+- **Documented layout format.** `examples/config.toml` now explains `[[screens]]` vs `[[screen_adjacency]]`, the optional `address`/`fingerprint`, and gives a worked multi-hop example.
+
+### Changed
+
+- `DaemonEvent::SessionReady` now boxes its `PeerSession` payload (the session grew a latency tracker; boxing keeps the enum variants balanced).
+
+### Test coverage
+
+- 84 tests pass workspace-wide (was 70). New: `Config::validate` cases, `StatusSnapshot` JSON round-trip, and `LatencyTracker` ping/pong bookkeeping. Still 2 ignored (`mdns_loopback`, `arboard_backend` — both need host facilities unavailable in CI).
+
+[#9]: https://github.com/Adjoint-uk/cross-control/issues/9
+[#13]: https://github.com/Adjoint-uk/cross-control/issues/13
+
 ### Added — Phase 2 opener: clipboard text sync
 
 - **`cross-control-clipboard` backends.** `ArboardClipboard` (default feature `arboard`) for the real system clipboard on X11, macOS, Windows, and wlroots-based Wayland; `MockClipboard` (feature `mock`) for tests and headless daemon runs. The trait now requires `Send + Sync + 'static` so the daemon can hold `&self.clipboard` across `.await` on a multi-thread runtime.

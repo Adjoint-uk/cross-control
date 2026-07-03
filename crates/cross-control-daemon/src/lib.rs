@@ -9,7 +9,9 @@ pub mod error;
 pub mod session;
 pub mod setup;
 pub mod state;
+pub mod status;
 
 pub use config::Config;
 pub use daemon::{Daemon, DaemonEvent, DaemonStatus};
 pub use error::DaemonError;
+pub use status::{PeerStatus, StatusSnapshot};

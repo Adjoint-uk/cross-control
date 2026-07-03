@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cross_control_clipboard::ClipboardProvider;
 use cross_control_discovery::{
@@ -20,6 +21,11 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 use crate::error::DaemonError;
 use crate::session::PeerSession;
+use crate::status::{status_file_path, PeerStatus, StatusSnapshot};
+
+/// How often the daemon pings each peer for latency and writes the status
+/// snapshot file the CLI reads.
+const STATUS_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Events processed by the daemon's main loop.
 pub enum DaemonEvent {
@@ -39,8 +45,9 @@ pub enum DaemonEvent {
     },
     /// A peer disconnected.
     PeerDisconnected(MachineId),
-    /// A fully handshaked session is ready (from a background task).
-    SessionReady { session: PeerSession },
+    /// A fully handshaked session is ready (from a background task). Boxed
+    /// because `PeerSession` is much larger than the other variants.
+    SessionReady { session: Box<PeerSession> },
     /// Shutdown signal.
     Shutdown,
 }
@@ -109,6 +116,14 @@ pub struct Daemon {
     /// skip it. When `Some`, the daemon syncs the text clipboard on each
     /// control hand-off.
     clipboard: Option<Box<dyn ClipboardProvider>>,
+    /// Latest status snapshot, shared with the file-writer task that the CLI
+    /// reads. Updated on peer, focus, and latency changes.
+    status_snapshot: Arc<Mutex<StatusSnapshot>>,
+    /// Monotonic sequence for liveness pings.
+    next_ping_seq: u64,
+    /// Handle to the background task that persists the status snapshot, so it
+    /// can be stopped cleanly on shutdown before the file is removed.
+    status_writer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Daemon {
@@ -170,6 +185,9 @@ impl Daemon {
             local_fingerprint: None,
             dialed_addrs: Arc::new(Mutex::new(HashSet::new())),
             clipboard: None,
+            status_snapshot: Arc::new(Mutex::new(StatusSnapshot::default())),
+            next_ping_seq: 0,
+            status_writer: None,
         }
     }
 
@@ -254,8 +272,11 @@ impl Daemon {
                                             remote = %remote,
                                             "inbound handshake complete"
                                         );
-                                        let _ =
-                                            tx.send(DaemonEvent::SessionReady { session }).await;
+                                        let _ = tx
+                                            .send(DaemonEvent::SessionReady {
+                                                session: Box::new(session),
+                                            })
+                                            .await;
                                     }
                                     Err(e) => {
                                         warn!(
@@ -371,15 +392,102 @@ impl Daemon {
 
         info!("daemon running");
         self.broadcast_status();
+        self.update_snapshot();
 
-        // Main event loop — purely event-driven, never blocks on I/O.
-        while let Some(event) = self.event_rx.recv().await {
-            if self.handle_event(event).await {
-                break;
+        // Persist the status snapshot to disk on a timer so a separate
+        // `cross-control status` process can read live peer/latency/focus
+        // state. Runs as its own task; stopped in `shutdown()`.
+        {
+            let snapshot = Arc::clone(&self.status_snapshot);
+            self.status_writer = Some(tokio::spawn(async move {
+                let path = status_file_path();
+                let mut ticker = tokio::time::interval(STATUS_INTERVAL);
+                loop {
+                    ticker.tick().await;
+                    let json = snapshot.lock().ok().and_then(|s| s.to_json().ok());
+                    if let Some(json) = json {
+                        let _ = std::fs::write(&path, json);
+                    }
+                }
+            }));
+        }
+
+        // Ping peers on the same cadence so latency stays fresh. Ticks are
+        // handled on the event loop itself, keeping all session mutation
+        // single-owner. The first tick fires immediately — swallow it.
+        let mut ping_interval = tokio::time::interval(STATUS_INTERVAL);
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ping_interval.tick().await;
+
+        // Main event loop — event-driven, with a periodic ping tick. Never
+        // blocks on I/O.
+        loop {
+            tokio::select! {
+                maybe_event = self.event_rx.recv() => {
+                    match maybe_event {
+                        Some(event) => {
+                            if self.handle_event(event).await {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    self.send_pings().await;
+                }
             }
         }
 
         self.shutdown().await
+    }
+
+    /// Send a liveness ping to every peer and record the send time so the
+    /// round-trip time can be computed when the `Pong` returns. Refreshes the
+    /// status snapshot afterward.
+    async fn send_pings(&mut self) {
+        let seq = self.next_ping_seq;
+        self.next_ping_seq = self.next_ping_seq.wrapping_add(1);
+        for session in self.sessions.values_mut() {
+            if session
+                .control_tx
+                .send(&ControlMessage::Ping { seq })
+                .await
+                .is_ok()
+            {
+                session.record_ping_sent(seq);
+            }
+        }
+        self.update_snapshot();
+    }
+
+    /// Rebuild the shared status snapshot from current sessions and focus.
+    /// Cheap — a handful of peers — and called only on peer/focus/latency
+    /// transitions, never on the mouse-move hot path.
+    fn update_snapshot(&self) {
+        let peers = self
+            .sessions
+            .values()
+            .map(|s| PeerStatus {
+                name: s.name.clone(),
+                machine_id: s.machine_id.to_string(),
+                address: s.connection.remote_address().to_string(),
+                state: s.state.to_string(),
+                latency_ms: s
+                    .last_rtt()
+                    .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            })
+            .collect();
+        let name_of = |id: MachineId| self.sessions.get(&id).map(|s| s.name.clone());
+        let snapshot = StatusSnapshot {
+            name: self.config.identity.name.clone(),
+            controlling: self.controlling.and_then(name_of),
+            controlled_by: self.controlled_by.and_then(name_of),
+            peers,
+        };
+        if let Ok(mut snap) = self.status_snapshot.lock() {
+            *snap = snapshot;
+        }
     }
 
     /// Handle a single daemon event. Returns `true` if the daemon should shut down.
@@ -398,7 +506,7 @@ impl Daemon {
                 self.handle_peer_disconnected(machine_id).await;
             }
             DaemonEvent::SessionReady { session } => {
-                self.handle_session_ready(session);
+                self.handle_session_ready(*session);
             }
             DaemonEvent::Shutdown => {
                 info!("shutting down");
@@ -422,7 +530,11 @@ impl Daemon {
                     .await
                     {
                         Ok(session) => {
-                            let _ = tx.send(DaemonEvent::SessionReady { session }).await;
+                            let _ = tx
+                                .send(DaemonEvent::SessionReady {
+                                    session: Box::new(session),
+                                })
+                                .await;
                         }
                         Err(e) => {
                             warn!(error = %e, "incoming connection handshake failed");
@@ -432,6 +544,10 @@ impl Daemon {
             }
         }
         self.broadcast_status();
+        // Refresh the CLI-facing snapshot after every transition. Cheap (a
+        // few peers) and keeps peers/latency/focus current without touching
+        // the file — the writer task persists it on its own timer.
+        self.update_snapshot();
         false
     }
 
@@ -833,6 +949,9 @@ impl Daemon {
             }
             ControlMessage::Pong { seq } => {
                 debug!(peer = %machine_id, seq, "received pong");
+                if let Some(session) = self.sessions.get_mut(&machine_id) {
+                    session.record_pong(seq);
+                }
             }
             ControlMessage::Clipboard(cb_msg) => {
                 self.handle_clipboard_message(machine_id, cb_msg).await;
@@ -1026,6 +1145,13 @@ impl Daemon {
     async fn shutdown(&mut self) -> Result<(), DaemonError> {
         info!("daemon shutting down");
 
+        // Stop the status writer before removing its file so it can't
+        // recreate it after cleanup.
+        if let Some(writer) = self.status_writer.take() {
+            writer.abort();
+        }
+        let _ = std::fs::remove_file(status_file_path());
+
         // Disconnect all peers
         let peer_ids: Vec<MachineId> = self.sessions.keys().copied().collect();
         for peer_id in peer_ids {
@@ -1104,7 +1230,9 @@ fn spawn_outbound_handshake(
                             "outbound handshake complete"
                         );
                         if event_tx
-                            .send(DaemonEvent::SessionReady { session })
+                            .send(DaemonEvent::SessionReady {
+                                session: Box::new(session),
+                            })
                             .await
                             .is_err()
                         {

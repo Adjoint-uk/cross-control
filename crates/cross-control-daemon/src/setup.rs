@@ -22,6 +22,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, DaemonError> {
             .map_err(|e| DaemonError::Config(format!("failed to read config: {e}")))?;
         let config: Config = toml::from_str(&content)
             .map_err(|e| DaemonError::Config(format!("failed to parse config: {e}")))?;
+        config
+            .validate()
+            .map_err(|e| DaemonError::Config(format!("invalid config: {e}")))?;
         info!(path = %config_path.display(), "loaded config");
         Ok(config)
     } else {
