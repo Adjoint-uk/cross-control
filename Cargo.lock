@@ -370,6 +370,7 @@ dependencies = [
  "arboard",
  "async-trait",
  "cross-control-types",
+ "image",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

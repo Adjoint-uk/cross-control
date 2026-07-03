@@ -60,6 +60,9 @@ rcgen = "0.13"
 # Clipboard
 arboard = "3"
 
+# Image codec for clipboard PNG <-> raw RGBA conversion
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # mDNS discovery
 mdns-sd = "0.13"
 

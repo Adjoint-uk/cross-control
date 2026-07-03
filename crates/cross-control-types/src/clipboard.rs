@@ -31,10 +31,38 @@ impl ClipboardContent {
         }
     }
 
+    /// Create HTML clipboard content.
+    #[must_use]
+    pub fn html(s: &str) -> Self {
+        Self {
+            format: ClipboardFormat::Html,
+            data: s.as_bytes().to_vec(),
+        }
+    }
+
+    /// Create PNG image clipboard content from encoded PNG bytes.
+    #[must_use]
+    pub fn png(bytes: Vec<u8>) -> Self {
+        Self {
+            format: ClipboardFormat::Png,
+            data: bytes,
+        }
+    }
+
     /// Try to interpret the data as UTF-8 text.
     #[must_use]
     pub fn as_text(&self) -> Option<&str> {
         if self.format == ClipboardFormat::PlainText {
+            std::str::from_utf8(&self.data).ok()
+        } else {
+            None
+        }
+    }
+
+    /// Try to interpret the data as a UTF-8 HTML fragment.
+    #[must_use]
+    pub fn as_html(&self) -> Option<&str> {
+        if self.format == ClipboardFormat::Html {
             std::str::from_utf8(&self.data).ok()
         } else {
             None
@@ -81,5 +109,21 @@ mod tests {
     fn clipboard_size() {
         let content = ClipboardContent::text("abc");
         assert_eq!(content.size(), 3);
+    }
+
+    #[test]
+    fn clipboard_html_roundtrip() {
+        let content = ClipboardContent::html("<b>hi</b>");
+        assert_eq!(content.format, ClipboardFormat::Html);
+        assert_eq!(content.as_html(), Some("<b>hi</b>"));
+        assert_eq!(content.as_text(), None);
+    }
+
+    #[test]
+    fn clipboard_png_helper_sets_format() {
+        let content = ClipboardContent::png(vec![0x89, 0x50, 0x4E, 0x47]);
+        assert_eq!(content.format, ClipboardFormat::Png);
+        assert_eq!(content.as_text(), None);
+        assert_eq!(content.as_html(), None);
     }
 }

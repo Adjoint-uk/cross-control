@@ -24,7 +24,9 @@ use crate::{ClipboardError, ClipboardProvider};
 /// Polling interval for `watch`. Tunable via [`ArboardClipboard::with_poll_interval`].
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// `arboard`-backed [`ClipboardProvider`]. Text-only for now.
+/// `arboard`-backed [`ClipboardProvider`]. Supports text, HTML, and PNG
+/// images. Image payloads are converted between the wire's PNG encoding and
+/// the raw RGBA the platform clipboard exposes.
 pub struct ArboardClipboard {
     /// Shared so `spawn_blocking` tasks can each grab a fresh lock.
     inner: Arc<Mutex<arboard::Clipboard>>,
@@ -67,35 +69,63 @@ impl ClipboardProvider for ArboardClipboard {
         .map_err(|e| ClipboardError::Other(e.into()))?
     }
 
-    async fn set(&mut self, content: ClipboardContent) -> Result<(), ClipboardError> {
-        if content.format != ClipboardFormat::PlainText {
-            return Err(ClipboardError::FormatUnavailable);
-        }
-        let text = content
-            .as_text()
-            .ok_or(ClipboardError::FormatUnavailable)?
-            .to_string();
+    async fn get_format(
+        &self,
+        format: ClipboardFormat,
+    ) -> Result<ClipboardContent, ClipboardError> {
         let inner = Arc::clone(&self.inner);
         spawn_blocking(move || {
             let mut guard = inner.lock().map_err(|_| ClipboardError::AccessDenied)?;
-            guard.set_text(text).map_err(map_arboard_error)
+            match format {
+                ClipboardFormat::PlainText => guard.get_text().map(|t| ClipboardContent::text(&t)),
+                ClipboardFormat::Html => guard.get().html().map(|h| ClipboardContent::html(&h)),
+                ClipboardFormat::Png => {
+                    let img = guard.get_image().map_err(map_arboard_error)?;
+                    return rgba_to_png(img.width, img.height, &img.bytes)
+                        .map(ClipboardContent::png);
+                }
+            }
+            .map_err(map_arboard_error)
+        })
+        .await
+        .map_err(|e| ClipboardError::Other(e.into()))?
+    }
+
+    async fn set(&mut self, content: ClipboardContent) -> Result<(), ClipboardError> {
+        let inner = Arc::clone(&self.inner);
+        spawn_blocking(move || {
+            let mut guard = inner.lock().map_err(|_| ClipboardError::AccessDenied)?;
+            match content.format {
+                ClipboardFormat::PlainText => {
+                    let text = content.as_text().ok_or(ClipboardError::FormatUnavailable)?;
+                    guard.set_text(text).map_err(map_arboard_error)
+                }
+                ClipboardFormat::Html => {
+                    let html = content.as_html().ok_or(ClipboardError::FormatUnavailable)?;
+                    guard.set_html(html, None).map_err(map_arboard_error)
+                }
+                ClipboardFormat::Png => {
+                    let image = png_to_rgba(&content.data)?;
+                    guard.set_image(image).map_err(map_arboard_error)
+                }
+            }
         })
         .await
         .map_err(|e| ClipboardError::Other(e.into()))?
     }
 
     async fn available_formats(&self) -> Result<Vec<ClipboardFormat>, ClipboardError> {
-        // arboard doesn't expose a list-formats API. We probe `get_text` and
-        // report PlainText if it works. HTML / image probing would add round
-        // trips for formats we don't yet sync — skip until those land.
+        // arboard has no list-formats API, so probe each format we support.
+        // A probe that comes back `ContentNotAvailable` just means that
+        // format isn't on the clipboard; only a harder error propagates.
         let inner = Arc::clone(&self.inner);
         spawn_blocking(move || {
             let mut guard = inner.lock().map_err(|_| ClipboardError::AccessDenied)?;
-            match guard.get_text() {
-                Ok(_) => Ok(vec![ClipboardFormat::PlainText]),
-                Err(arboard::Error::ContentNotAvailable) => Ok(Vec::new()),
-                Err(e) => Err(map_arboard_error(e)),
-            }
+            let mut formats = Vec::new();
+            probe(guard.get_text(), ClipboardFormat::PlainText, &mut formats)?;
+            probe(guard.get().html(), ClipboardFormat::Html, &mut formats)?;
+            probe(guard.get_image(), ClipboardFormat::Png, &mut formats)?;
+            Ok(formats)
         })
         .await
         .map_err(|e| ClipboardError::Other(e.into()))?
@@ -156,6 +186,49 @@ impl Drop for ArboardClipboard {
     }
 }
 
+/// Record `format` as available when the probe succeeded. A missing format
+/// (`ContentNotAvailable`) is skipped; any other error propagates.
+fn probe<T>(
+    result: Result<T, arboard::Error>,
+    format: ClipboardFormat,
+    into: &mut Vec<ClipboardFormat>,
+) -> Result<(), ClipboardError> {
+    match result {
+        Ok(_) => {
+            into.push(format);
+            Ok(())
+        }
+        Err(arboard::Error::ContentNotAvailable | arboard::Error::ConversionFailure) => Ok(()),
+        Err(e) => Err(map_arboard_error(e)),
+    }
+}
+
+/// Encode raw RGBA8 pixels (row-major, 4 bytes/pixel) as PNG.
+fn rgba_to_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, ClipboardError> {
+    let w = u32::try_from(width).map_err(|_| ClipboardError::FormatUnavailable)?;
+    let h = u32::try_from(height).map_err(|_| ClipboardError::FormatUnavailable)?;
+    let img = image::RgbaImage::from_raw(w, h, rgba.to_vec())
+        .ok_or_else(|| ClipboardError::Other(anyhow::anyhow!("RGBA buffer size mismatch")))?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| ClipboardError::Other(e.into()))?;
+    Ok(out.into_inner())
+}
+
+/// Decode PNG bytes into the raw RGBA [`arboard::ImageData`] the clipboard wants.
+fn png_to_rgba(png: &[u8]) -> Result<arboard::ImageData<'static>, ClipboardError> {
+    let img = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .map_err(|e| ClipboardError::Other(e.into()))?
+        .to_rgba8();
+    let (width, height) = img.dimensions();
+    Ok(arboard::ImageData {
+        width: width as usize,
+        height: height as usize,
+        bytes: std::borrow::Cow::Owned(img.into_raw()),
+    })
+}
+
 /// Translate an [`arboard::Error`] into our [`ClipboardError`] variants.
 fn map_arboard_error(e: arboard::Error) -> ClipboardError {
     match e {
@@ -172,6 +245,31 @@ fn map_arboard_error(e: arboard::Error) -> ClipboardError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_rgba_round_trip() {
+        // A 2x2 image with four distinct RGBA pixels survives encode → decode.
+        let width = 2usize;
+        let height = 2usize;
+        let rgba: Vec<u8> = vec![
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+            255, 255, 0, 128, // semi-transparent yellow
+        ];
+        let png = rgba_to_png(width, height, &rgba).expect("encode");
+        // PNG magic number.
+        assert_eq!(&png[..4], &[0x89, 0x50, 0x4E, 0x47]);
+        let decoded = png_to_rgba(&png).expect("decode");
+        assert_eq!(decoded.width, width);
+        assert_eq!(decoded.height, height);
+        assert_eq!(decoded.bytes.as_ref(), rgba.as_slice());
+    }
+
+    #[test]
+    fn png_decode_rejects_garbage() {
+        assert!(png_to_rgba(&[0, 1, 2, 3, 4]).is_err());
+    }
 
     /// Constructing the backend requires a display server; ignore by default.
     #[tokio::test]

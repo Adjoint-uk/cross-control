@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase 2: clipboard HTML and images ([#6], [#7])
+
+- **HTML and PNG image clipboard sync.** The clipboard path is no longer text-only. `ClipboardProvider` gained `get_format(format)`, and the `arboard` backend now reads/writes HTML (`get().html()` / `set_html`) and images, converting between the wire's PNG bytes and the raw RGBA the platform clipboard uses (via the `image` crate, PNG feature only). `available_formats()` probes all three formats.
+- **Richest-format selection on hand-off.** When the controller offers its clipboard, the controlled side now requests the richest format it can apply — image, else HTML, else plain text — instead of always taking plain text.
+- **Size cap enforced ([#7]).** Clipboard payloads over `clipboard.max_size` (default 10 MiB) are dropped with a warning on both the send and receive side, rather than put on the control stream. Chunked streaming of large images over a dedicated QUIC stream remains a follow-up.
+
+[#6]: https://github.com/Adjoint-uk/cross-control/issues/6
+[#7]: https://github.com/Adjoint-uk/cross-control/issues/7
+
 ### Added — Phase 2: live status readout ([#13]) and TOML layout validation ([#9])
 
 - **`cross-control status` now shows live peers, latency, and focus.** The daemon writes a `StatusSnapshot` (peers with name/state/latency, plus which peer holds focus) to `cross-control.status.json` in the runtime dir every couple of seconds; the `status` command reads and renders it as a table. This is the CLI↔daemon channel the previous `status` lacked — it mirrors the PID-file pattern rather than standing up a full IPC socket. A richer query/subscribe channel can replace the file later without changing the rendered output.

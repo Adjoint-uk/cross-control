@@ -994,11 +994,10 @@ impl Daemon {
         match msg {
             ClipboardMessage::Offer { formats, size_hint } => {
                 debug!(peer = %peer_id, ?formats, size_hint, "received clipboard offer");
-                // Prefer PlainText for now. HTML/PNG round-trip is defined in
-                // the wire protocol but no backend yet sets them.
-                let format = if formats.contains(&ClipboardFormat::PlainText) {
-                    ClipboardFormat::PlainText
-                } else {
+                // Request the richest format the peer offers that we know how
+                // to apply: an image beats HTML, HTML beats plain text.
+                let Some(format) = richest_format(&formats) else {
+                    debug!(peer = %peer_id, "offer had no format we support");
                     return;
                 };
                 let request = ControlMessage::Clipboard(ClipboardMessage::Request { format });
@@ -1012,17 +1011,27 @@ impl Daemon {
                 let Some(clipboard) = self.clipboard.as_ref() else {
                     return;
                 };
-                if format != ClipboardFormat::PlainText {
-                    debug!(?format, "clipboard request for unsupported format");
-                    return;
-                }
-                let content = match clipboard.get().await {
+                let content = match clipboard.get_format(format).await {
                     Ok(c) => c,
                     Err(e) => {
-                        debug!(error = %e, "clipboard get failed; ignoring request");
+                        debug!(?format, error = %e, "clipboard get failed; ignoring request");
                         return;
                     }
                 };
+                // Enforce the configured size cap before putting a large
+                // payload on the wire. Streaming large images is a follow-up;
+                // for now oversized content is simply not synced.
+                let max = self.config.clipboard.max_size;
+                if content.size() > max {
+                    warn!(
+                        peer = %peer_id,
+                        size = content.size(),
+                        max,
+                        ?format,
+                        "clipboard content exceeds max_size; not sending"
+                    );
+                    return;
+                }
                 let data = ControlMessage::Clipboard(ClipboardMessage::Data(content));
                 if let Some(session) = self.sessions.get_mut(&peer_id) {
                     if let Err(e) = session.control_tx.send(&data).await {
@@ -1031,6 +1040,16 @@ impl Daemon {
                 }
             }
             ClipboardMessage::Data(content) => {
+                let max = self.config.clipboard.max_size;
+                if content.size() > max {
+                    warn!(
+                        peer = %peer_id,
+                        size = content.size(),
+                        max,
+                        "received oversized clipboard content; rejecting"
+                    );
+                    return;
+                }
                 let Some(clipboard) = self.clipboard.as_mut() else {
                     return;
                 };
@@ -1175,6 +1194,19 @@ impl Daemon {
     pub fn set_local_devices(&mut self, devices: Vec<DeviceInfo>) {
         self.local_devices = devices;
     }
+}
+
+/// Pick the richest clipboard format from an offer that we can apply locally:
+/// image first, then HTML, then plain text. Returns `None` if the offer
+/// contains no format we recognise.
+fn richest_format(formats: &[ClipboardFormat]) -> Option<ClipboardFormat> {
+    [
+        ClipboardFormat::Png,
+        ClipboardFormat::Html,
+        ClipboardFormat::PlainText,
+    ]
+    .into_iter()
+    .find(|f| formats.contains(f))
 }
 
 /// Try to reserve a `SocketAddr` for an outbound dial. Returns `true` if this

@@ -8,9 +8,9 @@
 //! - [`mock::MockClipboard`] (feature `mock`) — in-memory, for tests and
 //!   headless runs.
 //!
-//! The text path (`ClipboardFormat::PlainText`) is wired end-to-end. HTML
-//! and image formats are defined in the wire protocol and accepted by the
-//! trait but are not yet implemented by either backend.
+//! Text, HTML, and PNG images are wired end-to-end through the `arboard`
+//! backend. Image payloads convert between the wire's PNG bytes and the raw
+//! RGBA the platform clipboard uses.
 
 use async_trait::async_trait;
 use cross_control_types::{ClipboardContent, ClipboardFormat};
@@ -34,8 +34,15 @@ pub use mock::MockClipboard;
 /// multi-thread runtime.
 #[async_trait]
 pub trait ClipboardProvider: Send + Sync + 'static {
-    /// Get the current clipboard content in the preferred format.
+    /// Get the current clipboard content in the preferred format (text if
+    /// available). Used for size hints; format-specific reads go through
+    /// [`ClipboardProvider::get_format`].
     async fn get(&self) -> Result<ClipboardContent, ClipboardError>;
+
+    /// Get the current clipboard content in a specific format, or
+    /// [`ClipboardError::FormatUnavailable`] if that format isn't present.
+    async fn get_format(&self, format: ClipboardFormat)
+        -> Result<ClipboardContent, ClipboardError>;
 
     /// Set the clipboard content.
     async fn set(&mut self, content: ClipboardContent) -> Result<(), ClipboardError>;
