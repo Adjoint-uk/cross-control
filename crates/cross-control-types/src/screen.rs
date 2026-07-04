@@ -47,6 +47,79 @@ impl ScreenGeometry {
     }
 }
 
+/// A machine's full display layout: one or more monitors, each a
+/// [`ScreenGeometry`] rectangle positioned by its `x`/`y` offset.
+///
+/// A single-monitor machine has one entry at the origin. A dual-monitor
+/// setup with two 1920×1080 panels side by side has two entries at `x = 0`
+/// and `x = 1920`. Edge detection and cursor clamping operate on the
+/// [`bounding_box`](DisplayLayout::bounding_box) — the union rectangle of all
+/// monitors — so the cursor traverses the whole combined desktop before it
+/// crosses to another machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
+pub struct DisplayLayout {
+    pub monitors: Vec<ScreenGeometry>,
+}
+
+impl DisplayLayout {
+    /// A single monitor at the origin.
+    #[must_use]
+    pub fn single(width: u32, height: u32) -> Self {
+        Self {
+            monitors: vec![ScreenGeometry::new(width, height)],
+        }
+    }
+
+    /// A layout from an explicit list of monitors.
+    #[must_use]
+    pub fn new(monitors: Vec<ScreenGeometry>) -> Self {
+        Self { monitors }
+    }
+
+    /// The union rectangle covering every monitor. Falls back to a 1920×1080
+    /// origin rectangle if the layout is somehow empty, so downstream edge
+    /// math never sees a zero-sized screen.
+    #[must_use]
+    pub fn bounding_box(&self) -> ScreenGeometry {
+        let mut iter = self.monitors.iter();
+        let Some(first) = iter.next() else {
+            return ScreenGeometry::new(1920, 1080);
+        };
+        let mut min_x = first.x;
+        let mut min_y = first.y;
+        let mut max_x = first
+            .x
+            .saturating_add(i32::try_from(first.width).unwrap_or(i32::MAX));
+        let mut max_y = first
+            .y
+            .saturating_add(i32::try_from(first.height).unwrap_or(i32::MAX));
+        for m in iter {
+            min_x = min_x.min(m.x);
+            min_y = min_y.min(m.y);
+            max_x = max_x.max(m.x.saturating_add(i32::try_from(m.width).unwrap_or(i32::MAX)));
+            max_y = max_y.max(m.y.saturating_add(i32::try_from(m.height).unwrap_or(i32::MAX)));
+        }
+        ScreenGeometry {
+            width: u32::try_from(max_x.saturating_sub(min_x)).unwrap_or(0),
+            height: u32::try_from(max_y.saturating_sub(min_y)).unwrap_or(0),
+            x: min_x,
+            y: min_y,
+        }
+    }
+
+    /// Whether a coordinate is on the given outer edge of the combined desktop.
+    #[must_use]
+    pub fn is_at_edge(&self, px: i32, py: i32, edge: ScreenEdge) -> bool {
+        self.bounding_box().is_at_edge(px, py, edge)
+    }
+}
+
+impl Default for DisplayLayout {
+    fn default() -> Self {
+        Self::single(1920, 1080)
+    }
+}
+
 /// Which edge of the screen a barrier is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Encode, Decode)]
 pub enum ScreenEdge {
@@ -176,6 +249,74 @@ mod tests {
         let bytes = bincode::encode_to_vec(&barrier, config).unwrap();
         let (decoded, _): (Barrier, _) = bincode::decode_from_slice(&bytes, config).unwrap();
         assert_eq!(barrier, decoded);
+    }
+
+    #[test]
+    fn layout_single_bounding_box() {
+        let layout = DisplayLayout::single(1920, 1080);
+        let bb = layout.bounding_box();
+        assert_eq!((bb.x, bb.y, bb.width, bb.height), (0, 0, 1920, 1080));
+    }
+
+    #[test]
+    fn layout_side_by_side_bounding_box() {
+        // Two 1920×1080 monitors side by side → a 3840×1080 desktop.
+        let layout = DisplayLayout::new(vec![
+            ScreenGeometry::new(1920, 1080),
+            ScreenGeometry {
+                width: 1920,
+                height: 1080,
+                x: 1920,
+                y: 0,
+            },
+        ]);
+        let bb = layout.bounding_box();
+        assert_eq!((bb.x, bb.y, bb.width, bb.height), (0, 0, 3840, 1080));
+        // The right edge is now at x = 3839, not 1919.
+        assert!(layout.is_at_edge(3839, 500, ScreenEdge::Right));
+        assert!(!layout.is_at_edge(1919, 500, ScreenEdge::Right));
+        assert!(layout.is_at_edge(0, 500, ScreenEdge::Left));
+    }
+
+    #[test]
+    fn layout_stacked_with_offset_origin() {
+        // A monitor above another, second at negative y.
+        let layout = DisplayLayout::new(vec![
+            ScreenGeometry::new(1920, 1080),
+            ScreenGeometry {
+                width: 1920,
+                height: 1080,
+                x: 0,
+                y: -1080,
+            },
+        ]);
+        let bb = layout.bounding_box();
+        assert_eq!((bb.x, bb.y, bb.width, bb.height), (0, -1080, 1920, 2160));
+        assert!(layout.is_at_edge(500, -1080, ScreenEdge::Top));
+        assert!(layout.is_at_edge(500, 1079, ScreenEdge::Bottom));
+    }
+
+    #[test]
+    fn layout_roundtrip() {
+        let layout = DisplayLayout::new(vec![
+            ScreenGeometry::new(1920, 1080),
+            ScreenGeometry {
+                width: 2560,
+                height: 1440,
+                x: 1920,
+                y: 0,
+            },
+        ]);
+        let config = bincode::config::standard();
+        let bytes = bincode::encode_to_vec(&layout, config).unwrap();
+        let (decoded, _): (DisplayLayout, _) = bincode::decode_from_slice(&bytes, config).unwrap();
+        assert_eq!(layout, decoded);
+    }
+
+    #[test]
+    fn empty_layout_falls_back() {
+        let bb = DisplayLayout::new(vec![]).bounding_box();
+        assert_eq!((bb.width, bb.height), (1920, 1080));
     }
 
     #[test]

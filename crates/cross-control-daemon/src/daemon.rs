@@ -12,8 +12,8 @@ use cross_control_discovery::{
 use cross_control_input::{InputCapture, InputEmulation};
 use cross_control_protocol::QuicTransport;
 use cross_control_types::{
-    CapturedEvent, ClipboardFormat, ClipboardMessage, ControlMessage, DeviceInfo, InputEvent,
-    InputMessage, KeyCode, MachineId, ScreenEdge, ScreenGeometry,
+    CapturedEvent, ClipboardFormat, ClipboardMessage, ControlMessage, DeviceInfo, DisplayLayout,
+    InputEvent, InputMessage, KeyCode, MachineId, ScreenEdge, ScreenGeometry,
 };
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -78,6 +78,10 @@ impl Default for DaemonStatus {
 pub struct Daemon {
     config: Config,
     machine_id: MachineId,
+    /// This machine's full monitor layout, sent to peers in the handshake.
+    layout: DisplayLayout,
+    /// Bounding box of `layout` — the combined desktop used for all edge
+    /// detection and cursor clamping.
     screen: ScreenGeometry,
     transport: QuicTransport,
     capture: Box<dyn InputCapture>,
@@ -135,7 +139,8 @@ impl Daemon {
         capture: Box<dyn InputCapture>,
         emulation: Box<dyn InputEmulation>,
     ) -> Self {
-        let screen = ScreenGeometry::new(config.daemon.screen_width, config.daemon.screen_height);
+        let layout = config.display_layout();
+        let screen = layout.bounding_box();
         let (event_tx, event_rx) = mpsc::channel(1024);
         let cursor_x = i32::try_from(screen.width / 2).unwrap_or(960);
         let cursor_y = i32::try_from(screen.height / 2).unwrap_or(540);
@@ -168,6 +173,7 @@ impl Daemon {
             cursor_y,
             config,
             machine_id,
+            layout,
             screen,
             transport,
             capture,
@@ -249,7 +255,7 @@ impl Daemon {
             let event_tx = self.event_tx.clone();
             let our_id = self.machine_id;
             let our_name = self.config.identity.name.clone();
-            let our_screen = self.screen.clone();
+            let our_layout = self.layout.clone();
             let local_devices = self.local_devices.clone();
             tokio::spawn(async move {
                 loop {
@@ -257,12 +263,12 @@ impl Daemon {
                         Ok(conn) => {
                             let tx = event_tx.clone();
                             let name = our_name.clone();
-                            let screen = our_screen.clone();
+                            let layout = our_layout.clone();
                             let devs = local_devices.clone();
                             tokio::spawn(async move {
                                 let remote = conn.remote_address();
                                 match perform_handshake_responder(
-                                    conn, our_id, &name, &screen, &devs,
+                                    conn, our_id, &name, &layout, &devs,
                                 )
                                 .await
                                 {
@@ -354,7 +360,7 @@ impl Daemon {
                     let event_tx = self.event_tx.clone();
                     let our_id = self.machine_id;
                     let our_name = self.config.identity.name.clone();
-                    let our_screen = self.screen.clone();
+                    let our_layout = self.layout.clone();
                     let local_devices = self.local_devices.clone();
                     let dialed = Arc::clone(&self.dialed_addrs);
                     tokio::spawn(async move {
@@ -373,7 +379,7 @@ impl Daemon {
                                         peer,
                                         our_id,
                                         our_name.clone(),
-                                        our_screen.clone(),
+                                        our_layout.clone(),
                                         local_devices.clone(),
                                         event_tx.clone(),
                                         Arc::clone(&dialed),
@@ -517,14 +523,14 @@ impl Daemon {
                 let tx = self.event_tx.clone();
                 let our_id = self.machine_id;
                 let our_name = self.config.identity.name.clone();
-                let our_screen = self.screen.clone();
+                let our_layout = self.layout.clone();
                 let local_devices = self.local_devices.clone();
                 tokio::spawn(async move {
                     match perform_handshake_responder(
                         conn,
                         our_id,
                         &our_name,
-                        &our_screen,
+                        &our_layout,
                         &local_devices,
                     )
                     .await
@@ -1237,7 +1243,7 @@ fn spawn_outbound_handshake(
     peer: Peer,
     our_id: MachineId,
     our_name: String,
-    our_screen: ScreenGeometry,
+    our_layout: DisplayLayout,
     local_devices: Vec<DeviceInfo>,
     event_tx: mpsc::Sender<DaemonEvent>,
     dialed: Arc<Mutex<HashSet<SocketAddr>>>,
@@ -1250,7 +1256,7 @@ fn spawn_outbound_handshake(
                     conn,
                     our_id,
                     &our_name,
-                    &our_screen,
+                    &our_layout,
                     &local_devices,
                 )
                 .await
@@ -1300,13 +1306,13 @@ async fn perform_handshake_responder(
     conn: cross_control_protocol::PeerConnection,
     our_id: MachineId,
     our_name: &str,
-    our_screen: &ScreenGeometry,
+    our_layout: &DisplayLayout,
     local_devices: &[DeviceInfo],
 ) -> Result<PeerSession, DaemonError> {
     let (control_tx, control_rx) = conn.accept_control_stream().await?;
     let mut session = PeerSession::new(conn, control_tx, control_rx);
     session
-        .handshake_responder(our_id, our_name, our_screen)
+        .handshake_responder(our_id, our_name, our_layout)
         .await?;
     session.announce_devices(local_devices).await?;
     Ok(session)
@@ -1318,13 +1324,13 @@ async fn perform_handshake_initiator(
     conn: cross_control_protocol::PeerConnection,
     our_id: MachineId,
     our_name: &str,
-    our_screen: &ScreenGeometry,
+    our_layout: &DisplayLayout,
     local_devices: &[DeviceInfo],
 ) -> Result<PeerSession, DaemonError> {
     let (control_tx, control_rx) = conn.open_control_stream().await?;
     let mut session = PeerSession::new(conn, control_tx, control_rx);
     session
-        .handshake_initiator(our_id, our_name, our_screen)
+        .handshake_initiator(our_id, our_name, our_layout)
         .await?;
     session.announce_devices(local_devices).await?;
     Ok(session)

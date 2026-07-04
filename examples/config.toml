@@ -22,6 +22,28 @@ release_hotkey = ["LeftCtrl", "LeftShift", "Escape"]
 enabled = true
 max_size = 10485760  # 10 MiB
 
+# ── Monitors (optional) ──────────────────────────────────────────────────
+#
+# By default this machine is treated as one screen sized by
+# daemon.screen_width/screen_height. For a multi-monitor setup, list each
+# monitor with its size and top-left offset (x, y) within the combined
+# desktop. Edge detection runs against the union of all monitors, so the
+# cursor traverses the whole desktop before crossing to another machine.
+#
+# Example: two 1920x1080 monitors side by side (a 3840x1080 desktop):
+#
+# [[monitors]]
+# width = 1920
+# height = 1080
+# x = 0
+# y = 0
+#
+# [[monitors]]
+# width = 1920
+# height = 1080
+# x = 1920
+# y = 0
+
 # ── Screen layout ────────────────────────────────────────────────────────
 #
 # [[screens]] declares a machine placed directly next to THIS one, and which

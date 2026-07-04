@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cross_control_types::screen::Position;
+use cross_control_types::screen::{DisplayLayout, Position, ScreenGeometry};
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration.
@@ -20,9 +20,35 @@ pub struct Config {
     pub screens: Vec<ScreenConfig>,
     #[serde(default)]
     pub screen_adjacency: Vec<ScreenAdjacency>,
+    /// This machine's monitors. When empty, the daemon falls back to a
+    /// single monitor sized by `daemon.screen_width`/`screen_height`.
+    #[serde(default)]
+    pub monitors: Vec<MonitorConfig>,
 }
 
 impl Config {
+    /// This machine's display layout. Uses the explicit `[[monitors]]` list
+    /// when present, otherwise a single monitor sized by the legacy
+    /// `daemon.screen_width`/`screen_height` fields.
+    #[must_use]
+    pub fn display_layout(&self) -> DisplayLayout {
+        if self.monitors.is_empty() {
+            DisplayLayout::single(self.daemon.screen_width, self.daemon.screen_height)
+        } else {
+            DisplayLayout::new(
+                self.monitors
+                    .iter()
+                    .map(|m| ScreenGeometry {
+                        width: m.width,
+                        height: m.height,
+                        x: m.x,
+                        y: m.y,
+                    })
+                    .collect(),
+            )
+        }
+    }
+
     /// Validate the screen layout before the daemon builds its adjacency map.
     ///
     /// The daemon derives cursor routing from `[[screens]]` and
@@ -31,6 +57,17 @@ impl Config {
     /// turns those into a clear startup error instead.
     pub fn validate(&self) -> Result<(), String> {
         let me = self.identity.name.as_str();
+
+        // Every declared monitor must have a non-zero size, or edge detection
+        // against the combined desktop breaks.
+        for (i, m) in self.monitors.iter().enumerate() {
+            if m.width == 0 || m.height == 0 {
+                return Err(format!(
+                    "monitor #{i} has a zero dimension ({}x{}); width and height must be > 0",
+                    m.width, m.height
+                ));
+            }
+        }
 
         // Direct neighbors: names must be present, unique, and distinct from
         // this machine.
@@ -216,6 +253,19 @@ impl Default for ClipboardConfig {
             max_size: default_max_clipboard_size(),
         }
     }
+}
+
+/// One monitor attached to this machine. Position is given by the top-left
+/// `x`/`y` offset within the machine's combined desktop; both default to 0
+/// for a single-monitor setup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorConfig {
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub x: i32,
+    #[serde(default)]
+    pub y: i32,
 }
 
 /// A remote screen definition.
@@ -424,6 +474,55 @@ position = "Right"
         }];
         let err = config.validate().unwrap_err();
         assert!(err.contains("itself"), "{err}");
+    }
+
+    #[test]
+    fn display_layout_falls_back_to_screen_dimensions() {
+        let mut config = Config::default();
+        config.daemon.screen_width = 2560;
+        config.daemon.screen_height = 1440;
+        let bb = config.display_layout().bounding_box();
+        assert_eq!((bb.width, bb.height), (2560, 1440));
+    }
+
+    #[test]
+    fn display_layout_uses_monitors_when_present() {
+        let config = Config {
+            monitors: vec![
+                MonitorConfig {
+                    width: 1920,
+                    height: 1080,
+                    x: 0,
+                    y: 0,
+                },
+                MonitorConfig {
+                    width: 1920,
+                    height: 1080,
+                    x: 1920,
+                    y: 0,
+                },
+            ],
+            ..Config::default()
+        };
+        let layout = config.display_layout();
+        assert_eq!(layout.monitors.len(), 2);
+        // Combined desktop is 3840 wide.
+        assert_eq!(layout.bounding_box().width, 3840);
+    }
+
+    #[test]
+    fn zero_size_monitor_rejected() {
+        let config = Config {
+            monitors: vec![MonitorConfig {
+                width: 1920,
+                height: 0,
+                x: 0,
+                y: 0,
+            }],
+            ..Config::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("zero dimension"), "{err}");
     }
 
     #[test]

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase 2: multi-monitor support ([#8])
+
+- **Machines can expose multiple monitors.** New `DisplayLayout { monitors: Vec<ScreenGeometry> }` type describes a machine's full monitor arrangement, configured via a `[[monitors]]` list (each with `width`, `height`, and top-left `x`/`y` offset). When no monitors are listed, the daemon falls back to a single monitor sized by `daemon.screen_width`/`screen_height`, so existing configs are unchanged.
+- **Edge detection spans the combined desktop.** The daemon derives the union bounding box of all monitors and runs all cursor clamping and barrier crossing against it — so on a dual-monitor machine the cursor now traverses the whole desktop before crossing to another machine, instead of stopping at the first monitor's inner edge. All crossing logic is unchanged; only the screen bounds it operates on now come from the layout.
+- **Layout travels on the wire.** `Hello`/`Welcome`/`ScreenUpdate` now carry the `DisplayLayout` instead of a single `ScreenGeometry`, so peers see each other's real monitor arrangement. Config validation rejects a monitor with a zero dimension.
+
+### Changed
+
+- **Protocol version → 0.2.** The handshake's screen field changed from `ScreenGeometry` to `DisplayLayout`; major version stays 0, so this is a breaking wire change within the pre-1.0 alpha (rebuild both ends).
+
+[#8]: https://github.com/Adjoint-uk/cross-control/issues/8
+
 ### Added — Phase 2: clipboard HTML and images ([#6], [#7])
 
 - **HTML and PNG image clipboard sync.** The clipboard path is no longer text-only. `ClipboardProvider` gained `get_format(format)`, and the `arboard` backend now reads/writes HTML (`get().html()` / `set_html`) and images, converting between the wire's PNG bytes and the raw RGBA the platform clipboard uses (via the `image` crate, PNG feature only). `available_formats()` probes all three formats.

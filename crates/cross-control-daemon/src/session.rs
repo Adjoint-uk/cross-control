@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use cross_control_protocol::{MessageReceiver, MessageSender, PeerConnection};
 use cross_control_types::{
-    ControlMessage, DeviceId, DeviceInfo, InputMessage, MachineId, ProtocolVersion, ScreenGeometry,
+    ControlMessage, DeviceId, DeviceInfo, DisplayLayout, InputMessage, MachineId, ProtocolVersion,
     VirtualDeviceId, PROTOCOL_VERSION,
 };
 use tracing::{debug, info, warn};
@@ -17,7 +17,7 @@ use crate::state::SessionState;
 pub struct PeerSession {
     pub machine_id: MachineId,
     pub name: String,
-    pub remote_screen: ScreenGeometry,
+    pub remote_layout: DisplayLayout,
     pub state: SessionState,
     pub control_tx: MessageSender,
     control_rx: Option<MessageReceiver>,
@@ -72,7 +72,7 @@ impl PeerSession {
         Self {
             machine_id: MachineId::default(),
             name: String::new(),
-            remote_screen: ScreenGeometry::new(1920, 1080),
+            remote_layout: DisplayLayout::default(),
             state: SessionState::Connected,
             control_tx,
             control_rx: Some(control_rx),
@@ -121,13 +121,13 @@ impl PeerSession {
         &mut self,
         our_id: MachineId,
         our_name: &str,
-        our_screen: &ScreenGeometry,
+        our_layout: &DisplayLayout,
     ) -> Result<(), DaemonError> {
         let hello = ControlMessage::Hello {
             version: PROTOCOL_VERSION,
             machine_id: our_id,
             name: our_name.to_string(),
-            screen: our_screen.clone(),
+            layout: our_layout.clone(),
         };
         self.control_tx.send(&hello).await?;
         self.state = SessionState::HelloSent;
@@ -146,12 +146,12 @@ impl PeerSession {
                 version,
                 machine_id,
                 name,
-                screen,
+                layout,
             } => {
                 verify_version(version)?;
                 self.machine_id = machine_id;
                 self.name.clone_from(&name);
-                self.remote_screen = screen;
+                self.remote_layout = layout;
                 self.state = SessionState::Idle;
                 info!(peer = %name, id = %machine_id, "handshake complete (initiator)");
                 Ok(())
@@ -171,7 +171,7 @@ impl PeerSession {
         &mut self,
         our_id: MachineId,
         our_name: &str,
-        our_screen: &ScreenGeometry,
+        our_layout: &DisplayLayout,
     ) -> Result<(), DaemonError> {
         let rx = self
             .control_rx
@@ -186,18 +186,18 @@ impl PeerSession {
                 version,
                 machine_id,
                 name,
-                screen,
+                layout,
             } => {
                 verify_version(version)?;
                 self.machine_id = machine_id;
                 self.name.clone_from(&name);
-                self.remote_screen = screen;
+                self.remote_layout = layout;
 
                 let welcome = ControlMessage::Welcome {
                     version: PROTOCOL_VERSION,
                     machine_id: our_id,
                     name: our_name.to_string(),
-                    screen: our_screen.clone(),
+                    layout: our_layout.clone(),
                 };
                 self.control_tx.send(&welcome).await?;
                 self.state = SessionState::Idle;

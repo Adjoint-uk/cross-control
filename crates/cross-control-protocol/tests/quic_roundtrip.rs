@@ -3,8 +3,8 @@
 use std::net::SocketAddr;
 
 use cross_control_types::{
-    ControlMessage, DeviceCapability, DeviceId, DeviceInfo, InputEvent, InputMessage, KeyCode,
-    MachineId, ScreenGeometry, PROTOCOL_VERSION,
+    ControlMessage, DeviceCapability, DeviceId, DeviceInfo, DisplayLayout, InputEvent,
+    InputMessage, KeyCode, MachineId, PROTOCOL_VERSION,
 };
 
 use cross_control_types::ButtonState;
@@ -35,7 +35,7 @@ async fn hello_welcome_handshake_on_loopback() {
                 version,
                 machine_id: _,
                 name,
-                screen: _,
+                layout: _,
             } => {
                 assert_eq!(version, PROTOCOL_VERSION);
                 assert_eq!(name, "test-client");
@@ -48,7 +48,7 @@ async fn hello_welcome_handshake_on_loopback() {
             version: PROTOCOL_VERSION,
             machine_id: MachineId::new(),
             name: "test-server".to_string(),
-            screen: ScreenGeometry::new(2560, 1440),
+            layout: DisplayLayout::single(2560, 1440),
         };
         tx.send(&welcome).await.unwrap();
 
@@ -96,7 +96,7 @@ async fn hello_welcome_handshake_on_loopback() {
         version: PROTOCOL_VERSION,
         machine_id: MachineId::new(),
         name: "test-client".to_string(),
-        screen: ScreenGeometry::new(1920, 1080),
+        layout: DisplayLayout::single(1920, 1080),
     };
     tx.send(&hello).await.unwrap();
 

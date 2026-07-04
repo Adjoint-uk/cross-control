@@ -39,11 +39,11 @@ Maximum message size: 1 MiB (1,048,576 bytes).
 
 ### Control Messages
 
-- `Hello { version, machine_id, name, screen }` - Initial handshake
-- `Welcome { version, machine_id, name, screen }` - Handshake response
+- `Hello { version, machine_id, name, layout }` - Initial handshake
+- `Welcome { version, machine_id, name, layout }` - Handshake response
 - `DeviceAnnounce(DeviceInfo)` - New input device available
 - `DeviceGone { device_id }` - Device removed
-- `ScreenUpdate(ScreenGeometry)` - Display geometry changed
+- `ScreenUpdate(DisplayLayout)` - Display layout changed (monitor added/removed)
 - `Enter { edge, position }` - Cursor crossing to remote
 - `EnterAck` - Remote ready to receive input
 - `Leave { edge, position }` - Cursor returning to local
@@ -64,4 +64,6 @@ Maximum message size: 1 MiB (1,048,576 bytes).
 
 The `Hello`/`Welcome` exchange includes a `ProtocolVersion { major, minor }`. Peers must have matching major versions. Minor version differences are tolerated (newer features are silently ignored by older peers).
 
-Current version: **0.1**
+`layout` is a `DisplayLayout { monitors: Vec<ScreenGeometry> }` — a machine's full monitor arrangement. A single-monitor machine sends one entry; edge detection runs against the union bounding box of all monitors.
+
+Current version: **0.2**
