@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Share your keyboard and mouse across machines. A modern, Rust virtual KVM: QUIC transport, always-on TLS 1.3, Wayland-native, zero-config mDNS discovery.">
+<meta name="theme-color" content="#0A0D13" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F4F6FA" media="(prefers-color-scheme: light)">
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHJlY3Qgd2lkdGg9JzI0JyBoZWlnaHQ9JzI0JyByeD0nNScgZmlsbD0nJTIzMEEwRDEzJy8+PHBhdGggZD0nTTYgNCBMNiAxOSBMMTAgMTUuNCBMMTIuNyAyMSBMMTUgMjAgTDEyLjMgMTQuNCBMMTggMTQuNCBaJyBmaWxsPSclMjMzQkUwQ0UnLz48L3N2Zz4=">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="cross-control">
+<meta property="og:title" content="cross-control — share your keyboard and mouse across machines">
+<meta property="og:description" content="Share your keyboard and mouse across machines. A modern, Rust virtual KVM: QUIC transport, always-on TLS 1.3, Wayland-native, zero-config mDNS discovery.">
+<meta property="og:url" content="https://cross-control.adjoint.uk/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="cross-control — a modern Rust virtual KVM">
+<meta name="twitter:description" content="Share your keyboard and mouse across machines. A modern, Rust virtual KVM: QUIC transport, always-on TLS 1.3, Wayland-native, zero-config mDNS discovery.">
+<title>cross-control — share your keyboard and mouse across machines</title>
+<style>
+  :root {
+    --ink: #0A0D13;
+    --surface: #10141C;
+    --surface-2: #161C28;
+    --line: #232B3B;
+    --line-soft: #1A2130;
+    --text: #E7ECF4;
+    --text-dim: #9AA6B9;
+    --text-faint: #61708A;
+    --accent: #3BE0CE;         /* machine A / primary signal */
+    --accent-strong: #57ECDB;
+    --accent-b: #F6A93B;        /* machine B / secondary */
+    --accent-ink: #06100E;
+    --good: #4CD98C;
+    --bad: #E06B7E;
+    --glow: 0 0 0 1px rgba(59,224,206,.4), 0 0 34px -6px rgba(59,224,206,.55);
+    --shadow: 0 22px 60px -30px rgba(0,0,0,.85);
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    --maxw: 1120px;
+    --r: 14px;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ink: #F4F6FA;
+      --surface: #FFFFFF;
+      --surface-2: #EEF2F8;
+      --line: #DCE3EE;
+      --line-soft: #E7ECF4;
+      --text: #101623;
+      --text-dim: #4B5768;
+      --text-faint: #7C889B;
+      --accent: #0E9E92;
+      --accent-strong: #0B8479;
+      --accent-b: #C6790F;
+      --accent-ink: #FFFFFF;
+      --good: #12915F;
+      --bad: #C1445A;
+      --glow: 0 0 0 1px rgba(14,158,146,.35), 0 0 30px -8px rgba(14,158,146,.4);
+      --shadow: 0 22px 50px -32px rgba(20,40,60,.5);
+      color-scheme: light;
+    }
+  }
+  /* Explicit toggle wins over the OS media query, both directions. */
+  :root[data-theme="dark"] {
+    --ink: #0A0D13; --surface: #10141C; --surface-2: #161C28; --line: #232B3B;
+    --line-soft: #1A2130; --text: #E7ECF4; --text-dim: #9AA6B9; --text-faint: #61708A;
+    --accent: #3BE0CE; --accent-strong: #57ECDB; --accent-b: #F6A93B; --accent-ink: #06100E;
+    --good: #4CD98C; --bad: #E06B7E;
+    --glow: 0 0 0 1px rgba(59,224,206,.4), 0 0 34px -6px rgba(59,224,206,.55);
+    --shadow: 0 22px 60px -30px rgba(0,0,0,.85);
+  }
+  :root[data-theme="light"] {
+    --ink: #F4F6FA; --surface: #FFFFFF; --surface-2: #EEF2F8; --line: #DCE3EE;
+    --line-soft: #E7ECF4; --text: #101623; --text-dim: #4B5768; --text-faint: #7C889B;
+    --accent: #0E9E92; --accent-strong: #0B8479; --accent-b: #C6790F; --accent-ink: #FFFFFF;
+    --good: #12915F; --bad: #C1445A;
+    --glow: 0 0 0 1px rgba(14,158,146,.35), 0 0 30px -8px rgba(14,158,146,.4);
+    --shadow: 0 22px 50px -32px rgba(20,40,60,.5);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* ambient grid backdrop — evokes screen coordinate space */
+  body::before {
+    content: "";
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(var(--line-soft) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
+    background-size: 48px 48px;
+    -webkit-mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 0%, transparent 72%);
+    mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 0%, transparent 72%);
+    opacity: .5;
+  }
+
+  .wrap { width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+  a { color: inherit; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.08; margin: 0; }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: .74rem; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600;
+    display: inline-flex; align-items: center; gap: .55em;
+  }
+  .eyebrow::before {
+    content: ""; width: 22px; height: 1px; background: var(--accent); opacity: .8;
+  }
+
+  /* ---------- nav ---------- */
+  header.nav {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(12px);
+    background: color-mix(in srgb, var(--ink) 78%, transparent);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .nav-in { display: flex; align-items: center; justify-content: space-between; height: 64px; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 11px; font-family: var(--font-mono); font-weight: 700; letter-spacing: -.01em; font-size: 1.02rem; }
+  .brand .mark { width: 26px; height: 26px; flex: none; }
+  .nav-links { display: flex; align-items: center; gap: 8px; }
+  .nav-links a.txt { display: none; font-family: var(--font-mono); font-size: .82rem; color: var(--text-dim); padding: 8px 12px; border-radius: 8px; text-decoration: none; }
+  .nav-links a.txt:hover { color: var(--text); background: var(--surface-2); }
+  @media (min-width: 800px) { .nav-links a.txt { display: inline-block; } }
+
+  .btn {
+    font-family: var(--font-mono); font-size: .84rem; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 16px; border-radius: 9px; text-decoration: none; cursor: pointer;
+    border: 1px solid transparent; transition: transform .12s ease, background .15s ease, border-color .15s ease;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); }
+  .btn-primary:hover { background: var(--accent-strong); }
+  .btn-ghost { border-color: var(--line); color: var(--text); background: var(--surface); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .theme-toggle {
+    font-family: var(--font-mono); font-size: .95rem; width: 40px; height: 38px; display: inline-flex;
+    align-items: center; justify-content: center; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--text-dim); cursor: pointer;
+  }
+  .theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* ---------- hero ---------- */
+  .hero { padding: clamp(56px, 9vw, 104px) 0 40px; }
+  .hero-grid { display: grid; gap: clamp(36px, 5vw, 56px); grid-template-columns: 1fr; align-items: center; }
+  @media (min-width: 940px) { .hero-grid { grid-template-columns: 1.02fr .98fr; } }
+
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 8px; margin-bottom: 22px;
+    font-family: var(--font-mono); font-size: .74rem; letter-spacing: .04em;
+    padding: 5px 11px 5px 8px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--text-dim);
+  }
+  .status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-b); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-b) 22%, transparent); }
+
+  h1.title {
+    font-size: clamp(2.5rem, 6.4vw, 4.4rem); font-weight: 800; letter-spacing: -.03em;
+    margin-bottom: 20px;
+  }
+  h1.title .cross { color: var(--accent); }
+  .lede { font-size: clamp(1.05rem, 1.8vw, 1.24rem); color: var(--text-dim); max-width: 30ch; margin-bottom: 30px; }
+  .hero-cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .hero-note { margin-top: 20px; font-family: var(--font-mono); font-size: .78rem; color: var(--text-faint); }
+  .hero-note b { color: var(--accent); font-weight: 600; }
+
+  /* ---------- cursor-crossing demo ---------- */
+  .demo { position: relative; }
+  .demo-stage {
+    position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+    box-shadow: var(--shadow); overflow: hidden; aspect-ratio: 16 / 10;
+  }
+  .machine { position: relative; padding: 14px; display: flex; flex-direction: column; transition: background .3s ease; }
+  .machine.a { background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 7%, var(--surface)), var(--surface)); }
+  .machine.b { background: linear-gradient(200deg, color-mix(in srgb, var(--accent-b) 7%, var(--surface)), var(--surface)); border-left: 1px dashed var(--line); }
+  .machine .label { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint); display: flex; justify-content: space-between; align-items: center; }
+  .machine.a .tag { color: var(--accent); }
+  .machine.b .tag { color: var(--accent-b); }
+  .machine .screen { flex: 1; margin-top: 10px; border-radius: 8px; border: 1px solid var(--line-soft); background: color-mix(in srgb, var(--ink) 55%, var(--surface)); display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+  .machine .glyphs { font-family: var(--font-mono); font-size: .6rem; line-height: 1.5; color: var(--text-faint); opacity: .5; padding: 10px; white-space: pre; }
+  .machine .active-chip {
+    position: absolute; top: 10px; left: 10px;
+    font-family: var(--font-mono); font-size: .6rem; letter-spacing: .1em; text-transform: uppercase;
+    padding: 3px 7px; border-radius: 6px; opacity: 0; transform: translateY(-4px); transition: opacity .25s ease, transform .25s ease;
+  }
+  .machine.a .active-chip { color: var(--accent-ink); background: var(--accent); }
+  .machine.b .active-chip { color: var(--accent-ink); background: var(--accent-b); }
+  .machine.active .active-chip { opacity: 1; transform: none; }
+  .machine.a.active { box-shadow: inset 0 0 0 1.5px var(--accent), inset 0 0 40px -18px var(--accent); }
+  .machine.b.active { box-shadow: inset 0 0 0 1.5px var(--accent-b), inset 0 0 40px -18px var(--accent-b); }
+
+  .cursor { position: absolute; top: 0; left: 0; width: 22px; height: 22px; z-index: 5; pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0,0,0,.5)); will-change: transform; }
+  .seam-flash { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-1px); background: var(--accent); opacity: 0; z-index: 4; box-shadow: 0 0 18px 2px var(--accent); }
+
+  .demo-caption { font-family: var(--font-mono); font-size: .72rem; color: var(--text-faint); text-align: center; margin-top: 14px; }
+  .demo-caption b { color: var(--text-dim); font-weight: 600; }
+
+  /* ---------- generic section ---------- */
+  section.band { padding: clamp(56px, 8vw, 92px) 0; }
+  .section-head { max-width: 60ch; margin-bottom: 40px; }
+  .section-head h2 { font-size: clamp(1.7rem, 3.2vw, 2.4rem); font-weight: 800; letter-spacing: -.02em; margin: 14px 0 12px; }
+  .section-head p { color: var(--text-dim); font-size: 1.04rem; margin: 0; }
+
+  /* ---------- comparison table ---------- */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: .9rem; }
+  th, td { padding: 13px 16px; text-align: left; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+  thead th { font-family: var(--font-mono); font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); font-weight: 600; background: var(--surface-2); position: sticky; top: 0; }
+  tbody th { font-family: var(--font-mono); font-weight: 600; color: var(--text-dim); font-size: .8rem; letter-spacing: .02em; }
+  td { color: var(--text-dim); }
+  tr td:last-child, tr th:last-child { border-left: 1px solid var(--line); }
+  .col-hl { background: color-mix(in srgb, var(--accent) 9%, var(--surface)); color: var(--text); font-weight: 600; }
+  thead .col-hl { background: color-mix(in srgb, var(--accent) 20%, var(--surface-2)); color: var(--accent); }
+  .yes { color: var(--good); font-weight: 600; }
+  .no { color: var(--bad); }
+  .tbl-foot { font-family: var(--font-mono); font-size: .72rem; color: var(--text-faint); margin-top: 14px; }
+
+  /* ---------- features ---------- */
+  .feat-grid { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  @media (min-width: 620px) { .feat-grid { grid-template-columns: 1fr 1fr; } }
+  @media (min-width: 960px) { .feat-grid { grid-template-columns: 1fr 1fr 1fr; } }
+  .feat {
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 22px;
+    transition: transform .15s ease, border-color .15s ease;
+  }
+  .feat:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+  .feat .ic { font-family: var(--font-mono); font-size: .72rem; letter-spacing: .04em; color: var(--accent); display: inline-flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .feat .ic .sq { width: 9px; height: 9px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 10px -1px var(--accent); }
+  .feat h3 { font-size: 1.06rem; font-weight: 700; margin-bottom: 7px; letter-spacing: -.01em; }
+  .feat p { margin: 0; color: var(--text-dim); font-size: .92rem; }
+
+  /* ---------- terminal blocks ---------- */
+  .split { display: grid; gap: 26px; grid-template-columns: 1fr; align-items: start; }
+  @media (min-width: 900px) { .split { grid-template-columns: 1fr 1fr; } }
+  .term {
+    border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--surface-2); box-shadow: var(--shadow);
+  }
+  .term-bar { display: flex; align-items: center; gap: 7px; padding: 11px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--ink) 40%, var(--surface-2)); }
+  .term-bar .b { width: 11px; height: 11px; border-radius: 50%; background: var(--line); }
+  .term-bar .b:nth-child(1) { background: color-mix(in srgb, var(--bad) 70%, var(--line)); }
+  .term-bar .b:nth-child(2) { background: color-mix(in srgb, var(--accent-b) 70%, var(--line)); }
+  .term-bar .b:nth-child(3) { background: color-mix(in srgb, var(--good) 70%, var(--line)); }
+  .term-bar .ttl { margin-left: 8px; font-family: var(--font-mono); font-size: .7rem; color: var(--text-faint); letter-spacing: .04em; }
+  pre { margin: 0; padding: 18px; font-family: var(--font-mono); font-size: .82rem; line-height: 1.7; color: var(--text); overflow-x: auto; }
+  pre .prompt { color: var(--accent); user-select: none; }
+  pre .cmt { color: var(--text-faint); }
+  pre .ok { color: var(--good); }
+  pre .a { color: var(--accent); }
+  pre .bb { color: var(--accent-b); }
+
+  .req-list { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 10px; }
+  .req-list li { display: flex; gap: 11px; align-items: baseline; font-size: .92rem; color: var(--text-dim); }
+  .req-list li::before { content: "▸"; color: var(--accent); font-family: var(--font-mono); }
+  .req-list code { font-family: var(--font-mono); font-size: .84em; background: var(--surface-2); padding: 1px 6px; border-radius: 5px; color: var(--text); border: 1px solid var(--line-soft); }
+
+  /* ---------- roadmap ---------- */
+  .road { display: grid; gap: 14px; grid-template-columns: 1fr; counter-reset: phase; }
+  @media (min-width: 720px) { .road { grid-template-columns: 1fr 1fr 1fr 1fr; } }
+  .phase { border: 1px solid var(--line); border-radius: var(--r); padding: 18px; background: var(--surface); position: relative; }
+  .phase .pk { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); }
+  .phase h3 { font-size: 1rem; margin: 8px 0 6px; font-weight: 700; }
+  .phase p { margin: 0; font-size: .84rem; color: var(--text-dim); }
+  .phase .st { position: absolute; top: 16px; right: 16px; font-family: var(--font-mono); font-size: .62rem; letter-spacing: .06em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; }
+  .st.done { color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 45%, transparent); background: color-mix(in srgb, var(--good) 12%, transparent); }
+  .st.now { color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .st.next { color: var(--text-faint); border: 1px solid var(--line); }
+  .phase.active { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); box-shadow: 0 0 34px -18px var(--accent); }
+
+  /* ---------- cta strip ---------- */
+  .cta-strip {
+    border: 1px solid var(--line); border-radius: 20px; padding: clamp(34px, 5vw, 60px);
+    background:
+      radial-gradient(120% 140% at 100% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 60%),
+      radial-gradient(120% 140% at 0% 100%, color-mix(in srgb, var(--accent-b) 9%, transparent), transparent 55%),
+      var(--surface);
+    text-align: center; box-shadow: var(--shadow);
+  }
+  .cta-strip h2 { font-size: clamp(1.7rem, 4vw, 2.6rem); font-weight: 800; letter-spacing: -.02em; margin-bottom: 14px; }
+  .cta-strip p { color: var(--text-dim); max-width: 48ch; margin: 0 auto 26px; }
+  .cta-strip .hero-cta { justify-content: center; }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--line-soft); padding: 40px 0 60px; margin-top: 30px; }
+  .foot-in { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; align-items: center; }
+  .foot-in .brand { font-size: .95rem; }
+  .foot-links { display: flex; gap: 18px; flex-wrap: wrap; }
+  .foot-links a { font-family: var(--font-mono); font-size: .8rem; color: var(--text-dim); text-decoration: none; }
+  .foot-links a:hover { color: var(--accent); }
+  .lic { font-family: var(--font-mono); font-size: .72rem; color: var(--text-faint); margin-top: 18px; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cursor, .seam-flash, .feat, .btn { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap nav-in">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="1.5" y="5" width="13" height="10" rx="2" stroke="var(--accent)" stroke-width="1.6"/>
+        <rect x="17.5" y="17" width="13" height="10" rx="2" stroke="var(--accent-b)" stroke-width="1.6"/>
+        <path d="M11 15 L11 21 Q11 22 12 22 L20 22" stroke="var(--text-dim)" stroke-width="1.4" fill="none" stroke-dasharray="2 2"/>
+        <path d="M18.2 19.4 L22 22 L18.6 23 L17.9 26 Z" fill="var(--accent-b)"/>
+      </svg>
+      <span>cross&#8209;control</span>
+    </div>
+    <nav class="nav-links">
+      <a class="txt" href="#why">Why</a>
+      <a class="txt" href="#features">Features</a>
+      <a class="txt" href="#install">Install</a>
+      <button class="theme-toggle" id="themeBtn" aria-label="Toggle colour theme" title="Toggle theme">◐</button>
+      <a class="btn btn-ghost" href="https://github.com/Adjoint-uk/cross-control" target="_blank" rel="noopener">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <!-- HERO -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <span class="status-pill"><span class="dot"></span>v0.2.0&#8209;alpha · Linux · core KVM works end&#8209;to&#8209;end</span>
+        <h1 class="title">Your keyboard and mouse, across every machine on the desk.</h1>
+        <p class="lede">A modern, Rust virtual KVM. Push your cursor to the screen edge and it appears on the next machine — no hardware switch, no cables.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#install">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/Adjoint-uk/cross-control" target="_blank" rel="noopener">Star on GitHub ★</a>
+        </div>
+        <p class="hero-note">QUIC transport · always-on <b>TLS 1.3</b> · Wayland-native · zero-config mDNS discovery</p>
+      </div>
+
+      <div class="demo">
+        <div class="demo-stage" id="stage" role="img" aria-label="Animation: a cursor crosses from machine A to machine B when it reaches the screen edge.">
+          <div class="machine a" id="mA">
+            <div class="label"><span class="tag">● machine&#8209;a</span><span>1920×1080</span></div>
+            <div class="active-chip">controlling</div>
+            <div class="screen"><span class="glyphs">$ cross-control start
+listening 0.0.0.0:24800
+peer machine-b  3 ms
+▏</span></div>
+          </div>
+          <div class="machine b" id="mB">
+            <div class="label"><span class="tag">● machine&#8209;b</span><span>2560×1440</span></div>
+            <div class="active-chip">controlling</div>
+            <div class="screen"><span class="glyphs">$ cross-control start
+paired · tls 1.3 · tofu ✓
+awaiting cursor…
+▏</span></div>
+          </div>
+          <div class="seam-flash" id="seam"></div>
+          <svg class="cursor" id="cursor" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 2 L4 20 L9 15 L12.5 22 L15.5 20.5 L12 13.5 L19 13.5 Z" fill="#fff" stroke="#0A0D13" stroke-width="1.1" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <p class="demo-caption">Move to the edge → control crosses the seam. Press <b>Ctrl+Shift+Esc</b> to snap back.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHY / COMPARISON -->
+  <section class="band" id="why">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">The software KVM space is stagnant</span>
+        <h2>Barrier is dead. Synergy went proprietary. Wayland broke the rest.</h2>
+        <p>cross-control is a clean-room rebuild for how machines actually talk in 2026 — encrypted by default, discoverable on the LAN, and native to Wayland from the first commit.</p>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col"></th>
+              <th scope="col">Barrier</th>
+              <th scope="col">Input Leap</th>
+              <th scope="col">Synergy</th>
+              <th scope="col">RKVM</th>
+              <th scope="col">LAN Mouse</th>
+              <th scope="col" class="col-hl">cross&#8209;control</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Maintained</th><td class="no">Dead ’22</td><td>Slow</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="col-hl yes">Active</td></tr>
+            <tr><th scope="row">Wayland</th><td class="no">No</td><td>Partial</td><td>Partial</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="col-hl yes">Native</td></tr>
+            <tr><th scope="row">Windows</th><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes</td><td class="col-hl">Planned</td></tr>
+            <tr><th scope="row">Protocol</th><td>Synergy v1</td><td>Synergy v1</td><td>Proprietary</td><td>Custom</td><td>Custom</td><td class="col-hl">QUIC</td></tr>
+            <tr><th scope="row">Encryption</th><td>Optional</td><td>Optional</td><td>TLS</td><td>TLS</td><td class="no">None</td><td class="col-hl yes">TLS 1.3 always</td></tr>
+            <tr><th scope="row">Discovery</th><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="col-hl yes">mDNS</td></tr>
+            <tr><th scope="row">License</th><td>GPL-2.0</td><td>GPL-2.0</td><td class="no">Proprietary</td><td>GPL-3.0</td><td>GPL-3.0</td><td class="col-hl yes">MIT / Apache-2.0</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="tbl-foot">No other KVM uses QUIC. No other KVM encrypts by default and discovers peers automatically.</p>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section class="band" id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">What's in the box</span>
+        <h2>Built like infrastructure, not a desk toy.</h2>
+      </div>
+      <div class="feat-grid">
+        <div class="feat"><span class="ic"><span class="sq"></span>TRANSPORT</span><h3>QUIC, not TCP</h3><p>Multiplexed streams, built-in TLS 1.3, and 0-RTT reconnection after a network blip. Control, input, and clipboard ride their own lanes.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>WAYLAND</span><h3>Native from day one</h3><p>Input via evdev/uinput, so it works on Wayland where Barrier and Input Leap fall over — with enhanced support for wlroots compositors.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>DISCOVERY</span><h3>Zero-config mDNS</h3><p>Machines find each other on the LAN automatically. No static IP in a config file — the advert even carries the cert fingerprint to pin.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>SECURITY</span><h3>Trust on first use</h3><p>SSH-style certificate pinning. No central authority, no account, no cloud. Keys stay on your machines; traffic is always encrypted.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>CLIPBOARD</span><h3>Text, HTML &amp; images</h3><p>Your clipboard follows control across the seam — plain text, rich HTML, and PNG images, synced on hand-off with a configurable size cap.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>TOPOLOGY</span><h3>Many machines, many monitors</h3><p>Star topology across any number of boxes, multi-monitor per machine, and edge-based switching just like macOS Universal Control.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRY IT -->
+  <section class="band" id="try">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">No second computer? No problem</span>
+        <h2>Run the whole thing on one machine.</h2>
+        <p>The loopback example spins up two daemons on <code style="font-family:var(--font-mono)">127.0.0.1</code> and drives a real session end to end — handshake, cursor crossing, input forwarding — no hardware, no root, no display server.</p>
+      </div>
+      <div class="split">
+        <div class="term">
+          <div class="term-bar"><span class="b"></span><span class="b"></span><span class="b"></span><span class="ttl">loopback demo</span></div>
+<pre><span class="prompt">$</span> cargo run -p cross-control-daemon \
+    --example loopback
+
+<span class="ok">✓</span> paired: machine-a <span class="a">⇄</span> machine-b <span class="cmt">(TLS 1.3)</span>
+<span class="ok">✓</span> crossed: machine-a controlling machine-b
+<span class="ok">✓</span> forwarded: virtual keyboard received <span class="bb">KeyA</span>
+<span class="ok">✓</span> done — full KVM path works on one box.</pre>
+        </div>
+        <div class="term">
+          <div class="term-bar"><span class="b"></span><span class="b"></span><span class="b"></span><span class="ttl">watch the peers</span></div>
+<pre><span class="prompt">$</span> cross-control status
+
+Status:  <span class="ok">running</span>
+Focus:   controlling machine-b
+Peers:   1 connected
+
+  NAME        STATE        LATENCY
+  machine-b   <span class="a">Controlling</span>  3 ms</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- INSTALL -->
+  <section class="band" id="install">
+    <div class="wrap split">
+      <div>
+        <span class="eyebrow">Install</span>
+        <h2 style="font-size:clamp(1.7rem,3.2vw,2.4rem);font-weight:800;letter-spacing:-.02em;margin:14px 0 12px;">One command on each machine.</h2>
+        <p style="color:var(--text-dim);margin:0 0 8px;">The script grabs the latest release binary and checks your input permissions. Then generate a cert, drop a small config, and <code style="font-family:var(--font-mono);font-size:.85em;background:var(--surface-2);padding:1px 6px;border-radius:5px;border:1px solid var(--line-soft)">cross-control start</code>.</p>
+        <ul class="req-list">
+          <li>Linux, x86_64 or aarch64 <span style="color:var(--text-faint)">— Windows &amp; macOS planned</span></li>
+          <li>Your user in the <code>input</code> group</li>
+          <li><code>/dev/uinput</code> readable for virtual devices</li>
+          <li>Optional: <code>systemctl --user enable --now cross-control</code></li>
+        </ul>
+      </div>
+      <div class="term" style="align-self:start;">
+        <div class="term-bar"><span class="b"></span><span class="b"></span><span class="b"></span><span class="ttl">install.sh</span></div>
+<pre><span class="cmt"># on both machines</span>
+<span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com\
+/Adjoint-uk/cross-control/main/install.sh | bash
+
+<span class="prompt">$</span> cross-control generate-cert
+<span class="prompt">$</span> cross-control start
+<span class="cmt"># move your cursor to the edge →</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROADMAP -->
+  <section class="band" id="roadmap">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Where it's going</span>
+        <h2>Honest about the road to 1.0.</h2>
+        <p>The core KVM works end-to-end on Linux today. It's alpha — not yet a daily driver, but moving fast in the open.</p>
+      </div>
+      <div class="road">
+        <div class="phase"><span class="st done">Shipped</span><span class="pk">Phase 1 · v0.2.0</span><h3>It works</h3><p>QUIC transport, evdev/uinput capture, multi-hop switching, mDNS discovery, TOFU pinning.</p></div>
+        <div class="phase active"><span class="st now">In progress</span><span class="pk">Phase 2 · v0.5.0</span><h3>It's pleasant</h3><p>Clipboard formats, multi-monitor, live status, TOML layouts, systemd service.</p></div>
+        <div class="phase"><span class="st next">Planned</span><span class="pk">Phase 3 · v0.9.0</span><h3>It's portable</h3><p>Windows &amp; macOS input backends, distro packaging, signed release binaries.</p></div>
+        <div class="phase"><span class="st next">Planned</span><span class="pk">Phase 4 · v1.0</span><h3>It's stable</h3><p>Frozen wire protocol, documented security model, fuzzing, a SemVer commitment.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="band">
+    <div class="wrap">
+      <div class="cta-strip">
+        <span class="eyebrow" style="justify-content:center;">Free forever · MIT / Apache-2.0</span>
+        <h2 style="margin-top:16px;">Reclaim the desk.</h2>
+        <p>One keyboard, one mouse, every machine. Encrypted, discoverable, and open source.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="https://github.com/Adjoint-uk/cross-control" target="_blank" rel="noopener">View on GitHub ↗</a>
+          <a class="btn btn-ghost" href="#install">Read the setup guide</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-in">
+      <div class="brand">
+        <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1.5" y="5" width="13" height="10" rx="2" stroke="var(--accent)" stroke-width="1.6"/>
+          <rect x="17.5" y="17" width="13" height="10" rx="2" stroke="var(--accent-b)" stroke-width="1.6"/>
+          <path d="M18.2 19.4 L22 22 L18.6 23 L17.9 26 Z" fill="var(--accent-b)"/>
+        </svg>
+        <span>cross&#8209;control</span>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/Adjoint-uk/cross-control" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/Adjoint-uk/cross-control/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/Adjoint-uk/cross-control/blob/main/docs/setup-guide.md" target="_blank" rel="noopener">Setup guide</a>
+        <a href="https://github.com/Adjoint-uk/cross-control/blob/main/DESIGN.md" target="_blank" rel="noopener">Design</a>
+      </div>
+    </div>
+    <p class="lic">Built in Rust · dual-licensed MIT / Apache-2.0 · trust-on-first-use, no cloud, no account.</p>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    // ---- theme toggle ----
+    var btn = document.getElementById('themeBtn');
+    btn.addEventListener('click', function () {
+      var root = document.documentElement;
+      var current = root.getAttribute('data-theme');
+      if (!current) {
+        current = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      root.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+    });
+
+    // ---- cursor-crossing demo ----
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var stage = document.getElementById('stage');
+    var cursor = document.getElementById('cursor');
+    var mA = document.getElementById('mA');
+    var mB = document.getElementById('mB');
+    var seam = document.getElementById('seam');
+
+    function place(xFrac, yFrac) {
+      var w = stage.clientWidth, h = stage.clientHeight;
+      cursor.style.transform = 'translate(' + (xFrac * w - 4) + 'px,' + (yFrac * h - 3) + 'px)';
+    }
+
+    if (reduce) {
+      // Static: cursor resting at the seam, both machines lit.
+      place(0.5, 0.5);
+      mA.classList.add('active'); mB.classList.add('active');
+      return;
+    }
+
+    // Keyframes across the two-panel desktop, in fractional stage coords.
+    // Dwell on each machine, then travel across the seam.
+    var kf = [
+      { t: 0.00, x: 0.24, y: 0.62, side: 'a' },
+      { t: 0.22, x: 0.46, y: 0.42, side: 'a' },
+      { t: 0.34, x: 0.54, y: 0.40, side: 'b' },   // crossing the seam
+      { t: 0.55, x: 0.78, y: 0.30, side: 'b' },
+      { t: 0.72, x: 0.54, y: 0.55, side: 'b' },
+      { t: 0.82, x: 0.46, y: 0.58, side: 'a' },    // crossing back
+      { t: 1.00, x: 0.24, y: 0.62, side: 'a' }
+    ];
+    var PERIOD = 7200; // ms for a full there-and-back
+    var start = null;
+    var lastSide = null;
+
+    function lerp(a, b, u) { return a + (b - a) * u; }
+    function ease(u) { return u < 0.5 ? 2*u*u : 1 - Math.pow(-2*u+2, 2)/2; }
+
+    function frame(ts) {
+      if (start === null) start = ts;
+      var p = ((ts - start) % PERIOD) / PERIOD; // 0..1
+      // find segment
+      var i = 0;
+      while (i < kf.length - 1 && p > kf[i + 1].t) i++;
+      var a = kf[i], b = kf[Math.min(i + 1, kf.length - 1)];
+      var span = (b.t - a.t) || 1;
+      var u = ease(Math.max(0, Math.min(1, (p - a.t) / span)));
+      place(lerp(a.x, b.x, u), lerp(a.y, b.y, u));
+
+      var side = u < 0.5 ? a.side : b.side;
+      if (side !== lastSide) {
+        if (side === 'a') { mA.classList.add('active'); mB.classList.remove('active'); }
+        else { mB.classList.add('active'); mA.classList.remove('active'); }
+        // flash the seam on a real crossing
+        if (lastSide !== null) {
+          seam.style.transition = 'none'; seam.style.opacity = '0.9';
+          requestAnimationFrame(function () {
+            seam.style.transition = 'opacity .6s ease'; seam.style.opacity = '0';
+          });
+        }
+        lastSide = side;
+      }
+      requestAnimationFrame(frame);
+    }
+
+    // initialize position, then run
+    place(kf[0].x, kf[0].y);
+    mA.classList.add('active');
+    lastSide = 'a';
+    requestAnimationFrame(frame);
+    window.addEventListener('resize', function () { /* transform recomputed next frame */ });
+  })();
+</script>
+</body>
+</html>
