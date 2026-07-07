@@ -300,9 +300,8 @@ fn diagnose_no_devices() -> InputError {
 
             // Event files exist — check if we can read any
             let any_readable = event_files.iter().any(|f| {
-                fs::metadata(f.path())
-                    .map(|m| m.mode() & 0o004 != 0) // world-readable
-                    .unwrap_or(false)
+                // world-readable, or openable by us
+                fs::metadata(f.path()).is_ok_and(|m| m.mode() & 0o004 != 0)
                     || fs::File::open(f.path()).is_ok()
             });
 
