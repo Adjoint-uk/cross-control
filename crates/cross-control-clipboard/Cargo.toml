@@ -11,7 +11,8 @@ authors.workspace = true
 [features]
 default = ["arboard"]
 # Real backend over arboard (X11, macOS, Windows, wlroots-based Wayland).
-arboard = ["dep:arboard"]
+# Pulls in `image` for PNG <-> raw RGBA conversion on the image path.
+arboard = ["dep:arboard", "dep:image"]
 # In-memory backend for tests and headless daemon runs.
 mock = []
 
@@ -23,6 +24,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 arboard = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

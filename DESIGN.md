@@ -17,7 +17,7 @@ The codebase is past the v0.2.0-alpha *code* milestone — only hardware bring-u
 - **`cross-control-discovery`** (~500 LOC) — `Discovery` trait + `MdnsDiscovery` (mdns-sd, fingerprint TXT records) + `DiscoveryAggregator` (multi-backend fan-in with `MachineId` dedupe) + `StaticDiscovery` (wraps config peers).
 - **`cross-control-cli`** (269 LOC) — `start`, `stop`, `status`, `generate-cert`, `pair`.
 - **`cross-control-certgen`** (125 LOC) — TLS cert generation + SHA-256 fingerprinting.
-- **`cross-control-clipboard`** — text backend shipped (Phase 2 opener); HTML/image backends remain.
+- **`cross-control-clipboard`** — text, HTML, and PNG image backends shipped over `arboard`, with a per-hand-off size cap. Chunked streaming of large images remains.
 - **`cross-control-tui-test`** (884 LOC) — TUI harness for visual testing.
 
 ---

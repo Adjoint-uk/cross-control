@@ -12,8 +12,8 @@ use cross_control_daemon::config::{
 use cross_control_daemon::{Daemon, DaemonEvent, DaemonStatus};
 use cross_control_input::mock::{MockCapture, MockEmulation, MockEmulationHandle};
 use cross_control_types::{
-    ButtonState, CapturedEvent, ClipboardContent, DeviceCapability, DeviceId, DeviceInfo,
-    InputEvent, KeyCode, MachineId, Position,
+    ButtonState, CapturedEvent, ClipboardContent, ClipboardFormat, DeviceCapability, DeviceId,
+    DeviceInfo, InputEvent, KeyCode, MachineId, Position,
 };
 use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
@@ -1051,6 +1051,94 @@ async fn test_clipboard_text_syncs_on_control_handoff() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(got.as_deref(), Some("hello from A"));
+
+    pair.shutdown().await;
+}
+
+/// Drive the pair to the point where A is controlling B — the trigger for the
+/// clipboard hand-off (Offer → Request → Data).
+async fn drive_to_controlling(pair: &mut TestPair) {
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake A");
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake B");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    for _ in 0..5 {
+        pair.feed_a
+            .send(CapturedEvent {
+                device_id: DeviceId(2),
+                timestamp_us: 1000,
+                event: InputEvent::MouseMove { dx: 500, dy: 0 },
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("A should be controlling");
+}
+
+#[tokio::test]
+async fn test_clipboard_html_syncs_on_control_handoff() {
+    let mut pair = setup_pair().await;
+    pair.clipboard_a
+        .set(ClipboardContent::html("<b>bold from A</b>"))
+        .await
+        .expect("set A clipboard");
+
+    drive_to_controlling(&mut pair).await;
+
+    // B should request HTML (the richest format offered) and apply it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut got: Option<String> = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(content) = pair.clipboard_b.get_format(ClipboardFormat::Html).await {
+            got = content.as_html().map(str::to_string);
+            if got.is_some() {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(got.as_deref(), Some("<b>bold from A</b>"));
+
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_clipboard_image_syncs_on_control_handoff() {
+    let mut pair = setup_pair().await;
+    // The bytes are opaque to the mock backend (no PNG decode), so any
+    // payload exercises the Offer → Request(Png) → Data round-trip.
+    let png_bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4];
+    pair.clipboard_a
+        .set(ClipboardContent::png(png_bytes.clone()))
+        .await
+        .expect("set A clipboard");
+
+    drive_to_controlling(&mut pair).await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut got: Option<Vec<u8>> = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(content) = pair.clipboard_b.get_format(ClipboardFormat::Png).await {
+            got = Some(content.data);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(got.as_deref(), Some(png_bytes.as_slice()));
 
     pair.shutdown().await;
 }

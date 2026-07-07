@@ -37,7 +37,7 @@ pub fn decode_message<T: Decode<()>>(payload: &[u8]) -> Result<T, ProtocolError>
 mod tests {
     use super::*;
     use cross_control_types::message::{ControlMessage, Message, PROTOCOL_VERSION};
-    use cross_control_types::screen::ScreenGeometry;
+    use cross_control_types::screen::DisplayLayout;
     use cross_control_types::MachineId;
 
     #[test]
@@ -46,7 +46,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             machine_id: MachineId::new(),
             name: "test".to_string(),
-            screen: ScreenGeometry::new(1920, 1080),
+            layout: DisplayLayout::single(1920, 1080),
         });
 
         let bytes = encode_message(&msg).unwrap();

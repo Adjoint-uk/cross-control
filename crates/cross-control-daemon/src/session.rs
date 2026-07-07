@@ -1,10 +1,11 @@
 //! Peer session management: handshake, enter/leave, device announce.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use cross_control_protocol::{MessageReceiver, MessageSender, PeerConnection};
 use cross_control_types::{
-    ControlMessage, DeviceId, DeviceInfo, InputMessage, MachineId, ProtocolVersion, ScreenGeometry,
+    ControlMessage, DeviceId, DeviceInfo, DisplayLayout, InputMessage, MachineId, ProtocolVersion,
     VirtualDeviceId, PROTOCOL_VERSION,
 };
 use tracing::{debug, info, warn};
@@ -16,7 +17,7 @@ use crate::state::SessionState;
 pub struct PeerSession {
     pub machine_id: MachineId,
     pub name: String,
-    pub remote_screen: ScreenGeometry,
+    pub remote_layout: DisplayLayout,
     pub state: SessionState,
     pub control_tx: MessageSender,
     control_rx: Option<MessageReceiver>,
@@ -27,6 +28,38 @@ pub struct PeerSession {
     /// Devices announced by the remote peer.
     pub remote_devices: Vec<DeviceInfo>,
     pub connection: PeerConnection,
+    /// Liveness-ping bookkeeping used to derive the round-trip time.
+    latency: LatencyTracker,
+}
+
+/// Tracks in-flight liveness pings and the most recent round-trip time for a
+/// single peer. Split out so the timing logic is unit-testable without a live
+/// QUIC connection.
+#[derive(Default)]
+struct LatencyTracker {
+    /// Sequence number → send time for pings awaiting a pong.
+    pending: HashMap<u64, Instant>,
+    /// Most recent measured round-trip time, if any ping has completed.
+    last_rtt: Option<Duration>,
+}
+
+impl LatencyTracker {
+    /// Record that a ping with `seq` was just sent. Prunes pings older than a
+    /// few cycles that never got a reply so the map can't grow unbounded.
+    fn record_sent(&mut self, seq: u64) {
+        let now = Instant::now();
+        self.pending
+            .retain(|_, sent| now.duration_since(*sent) < Duration::from_secs(30));
+        self.pending.insert(seq, now);
+    }
+
+    /// Match a pong to its ping and update the round-trip time. Unknown or
+    /// duplicate sequence numbers are ignored.
+    fn record_pong(&mut self, seq: u64) {
+        if let Some(sent) = self.pending.remove(&seq) {
+            self.last_rtt = Some(Instant::now().duration_since(sent));
+        }
+    }
 }
 
 impl PeerSession {
@@ -39,7 +72,7 @@ impl PeerSession {
         Self {
             machine_id: MachineId::default(),
             name: String::new(),
-            remote_screen: ScreenGeometry::new(1920, 1080),
+            remote_layout: DisplayLayout::default(),
             state: SessionState::Connected,
             control_tx,
             control_rx: Some(control_rx),
@@ -48,7 +81,25 @@ impl PeerSession {
             device_map: HashMap::new(),
             remote_devices: Vec::new(),
             connection,
+            latency: LatencyTracker::default(),
         }
+    }
+
+    /// Record that a liveness `Ping` with `seq` was just sent, so its `Pong`
+    /// can be timed.
+    pub fn record_ping_sent(&mut self, seq: u64) {
+        self.latency.record_sent(seq);
+    }
+
+    /// Match an incoming `Pong` to its `Ping` and update the round-trip time.
+    /// Unknown or duplicate sequence numbers are ignored.
+    pub fn record_pong(&mut self, seq: u64) {
+        self.latency.record_pong(seq);
+    }
+
+    /// The most recent round-trip time, if a ping has completed.
+    pub fn last_rtt(&self) -> Option<Duration> {
+        self.latency.last_rtt
     }
 
     /// Take ownership of the control receiver for spawning a reader task.
@@ -70,13 +121,13 @@ impl PeerSession {
         &mut self,
         our_id: MachineId,
         our_name: &str,
-        our_screen: &ScreenGeometry,
+        our_layout: &DisplayLayout,
     ) -> Result<(), DaemonError> {
         let hello = ControlMessage::Hello {
             version: PROTOCOL_VERSION,
             machine_id: our_id,
             name: our_name.to_string(),
-            screen: our_screen.clone(),
+            layout: our_layout.clone(),
         };
         self.control_tx.send(&hello).await?;
         self.state = SessionState::HelloSent;
@@ -95,12 +146,12 @@ impl PeerSession {
                 version,
                 machine_id,
                 name,
-                screen,
+                layout,
             } => {
                 verify_version(version)?;
                 self.machine_id = machine_id;
                 self.name.clone_from(&name);
-                self.remote_screen = screen;
+                self.remote_layout = layout;
                 self.state = SessionState::Idle;
                 info!(peer = %name, id = %machine_id, "handshake complete (initiator)");
                 Ok(())
@@ -120,7 +171,7 @@ impl PeerSession {
         &mut self,
         our_id: MachineId,
         our_name: &str,
-        our_screen: &ScreenGeometry,
+        our_layout: &DisplayLayout,
     ) -> Result<(), DaemonError> {
         let rx = self
             .control_rx
@@ -135,18 +186,18 @@ impl PeerSession {
                 version,
                 machine_id,
                 name,
-                screen,
+                layout,
             } => {
                 verify_version(version)?;
                 self.machine_id = machine_id;
                 self.name.clone_from(&name);
-                self.remote_screen = screen;
+                self.remote_layout = layout;
 
                 let welcome = ControlMessage::Welcome {
                     version: PROTOCOL_VERSION,
                     machine_id: our_id,
                     name: our_name.to_string(),
-                    screen: our_screen.clone(),
+                    layout: our_layout.clone(),
                 };
                 self.control_tx.send(&welcome).await?;
                 self.state = SessionState::Idle;
@@ -278,4 +329,41 @@ fn verify_version(remote: ProtocolVersion) -> Result<(), DaemonError> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latency_records_round_trip() {
+        let mut lt = LatencyTracker::default();
+        assert!(lt.last_rtt.is_none());
+        lt.record_sent(1);
+        lt.record_pong(1);
+        assert!(lt.last_rtt.is_some());
+        // The ping is consumed once matched.
+        assert!(lt.pending.is_empty());
+    }
+
+    #[test]
+    fn pong_for_unknown_seq_is_ignored() {
+        let mut lt = LatencyTracker::default();
+        lt.record_sent(1);
+        // A pong for a seq we never sent leaves state untouched.
+        lt.record_pong(99);
+        assert!(lt.last_rtt.is_none());
+        assert_eq!(lt.pending.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_pong_is_ignored() {
+        let mut lt = LatencyTracker::default();
+        lt.record_sent(1);
+        lt.record_pong(1);
+        let first = lt.last_rtt;
+        // A second pong for the same seq has no matching ping to consume.
+        lt.record_pong(1);
+        assert_eq!(lt.last_rtt, first);
+    }
 }

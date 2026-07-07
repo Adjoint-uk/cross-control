@@ -20,4 +20,4 @@ pub use machine::MachineId;
 pub use message::{
     ClipboardMessage, ControlMessage, InputMessage, Message, ProtocolVersion, PROTOCOL_VERSION,
 };
-pub use screen::{Barrier, BarrierId, Position, ScreenEdge, ScreenGeometry};
+pub use screen::{Barrier, BarrierId, DisplayLayout, Position, ScreenEdge, ScreenGeometry};

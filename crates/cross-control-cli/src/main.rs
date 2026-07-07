@@ -251,7 +251,58 @@ fn show_status() -> anyhow::Result<()> {
         }
     }
 
+    // Show live peers, latency, and focus from the daemon's status snapshot.
+    // The daemon writes this file every couple of seconds; a running daemon
+    // that hasn't written it yet (just started) simply shows no peers.
+    if alive {
+        print_live_status();
+    }
+
     Ok(())
+}
+
+/// Read and render the daemon's status snapshot: which peer holds focus and
+/// the table of connected peers with latency. Silent if the file is missing
+/// or unreadable — the daemon may not have written it yet.
+fn print_live_status() {
+    use cross_control_daemon::status::{status_file_path, StatusSnapshot};
+
+    let Ok(content) = std::fs::read_to_string(status_file_path()) else {
+        return;
+    };
+    let Ok(snapshot) = StatusSnapshot::from_json(&content) else {
+        return;
+    };
+
+    // Focus line: who is driving whom right now.
+    let focus = match (&snapshot.controlling, &snapshot.controlled_by) {
+        (Some(c), _) => format!("controlling {c}"),
+        (None, Some(b)) => format!("controlled by {b}"),
+        (None, None) => "local".to_string(),
+    };
+    println!("Focus:   {focus}");
+
+    if snapshot.peers.is_empty() {
+        println!("Peers:   none connected");
+        return;
+    }
+
+    println!("Peers:   {} connected", snapshot.peers.len());
+    println!();
+    print_peer_row("NAME", "STATE", "LATENCY", "ADDRESS");
+    for peer in &snapshot.peers {
+        let latency = peer
+            .latency_ms
+            .map_or_else(|| "—".to_string(), |ms| format!("{ms} ms"));
+        print_peer_row(&peer.name, &peer.state, &latency, &peer.address);
+    }
+}
+
+/// Print one aligned row of the peer table. Inlining the captured identifiers
+/// (rather than passing string literals as args) keeps the header call free of
+/// the `print_literal` lint.
+fn print_peer_row(name: &str, state: &str, latency: &str, address: &str) {
+    println!("  {name:<20} {state:<10} {latency:<10} {address}");
 }
 
 fn stop_daemon() -> anyhow::Result<()> {

@@ -1,8 +1,25 @@
+# cross-control — systemd *user* service.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/cross-control.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now cross-control
+#
+# Prerequisites (input capture/emulation needs device access):
+#   - your user is in the `input` group
+#   - /dev/uinput is readable/writable by that group
+#   The install script sets these up; see README "Run as a service".
+#
+# ExecStart assumes the binary is on ~/.cargo/bin (the `cargo install`
+# default). If you installed elsewhere (e.g. ~/.local/bin), edit the path
+# below or drop in an override with `systemctl --user edit cross-control`.
+
 [Unit]
 Description=cross-control virtual KVM daemon
 Documentation=https://github.com/Adjoint-uk/cross-control
-After=network-online.target
-Wants=network-online.target
+# No network-online ordering: that target is not available in the user
+# manager, and the daemon reconnects on its own when the network changes.
 
 [Service]
 Type=simple

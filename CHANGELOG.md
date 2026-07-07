@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase 2: multi-monitor support ([#8])
+
+- **Machines can expose multiple monitors.** New `DisplayLayout { monitors: Vec<ScreenGeometry> }` type describes a machine's full monitor arrangement, configured via a `[[monitors]]` list (each with `width`, `height`, and top-left `x`/`y` offset). When no monitors are listed, the daemon falls back to a single monitor sized by `daemon.screen_width`/`screen_height`, so existing configs are unchanged.
+- **Edge detection spans the combined desktop.** The daemon derives the union bounding box of all monitors and runs all cursor clamping and barrier crossing against it — so on a dual-monitor machine the cursor now traverses the whole desktop before crossing to another machine, instead of stopping at the first monitor's inner edge. All crossing logic is unchanged; only the screen bounds it operates on now come from the layout.
+- **Layout travels on the wire.** `Hello`/`Welcome`/`ScreenUpdate` now carry the `DisplayLayout` instead of a single `ScreenGeometry`, so peers see each other's real monitor arrangement. Config validation rejects a monitor with a zero dimension.
+
+### Changed
+
+- **Protocol version → 0.2.** The handshake's screen field changed from `ScreenGeometry` to `DisplayLayout`; major version stays 0, so this is a breaking wire change within the pre-1.0 alpha (rebuild both ends).
+
+[#8]: https://github.com/Adjoint-uk/cross-control/issues/8
+
+### Added — Phase 2: clipboard HTML and images ([#6], [#7])
+
+- **HTML and PNG image clipboard sync.** The clipboard path is no longer text-only. `ClipboardProvider` gained `get_format(format)`, and the `arboard` backend now reads/writes HTML (`get().html()` / `set_html`) and images, converting between the wire's PNG bytes and the raw RGBA the platform clipboard uses (via the `image` crate, PNG feature only). `available_formats()` probes all three formats.
+- **Richest-format selection on hand-off.** When the controller offers its clipboard, the controlled side now requests the richest format it can apply — image, else HTML, else plain text — instead of always taking plain text.
+- **Size cap enforced ([#7]).** Clipboard payloads over `clipboard.max_size` (default 10 MiB) are dropped with a warning on both the send and receive side, rather than put on the control stream. Chunked streaming of large images over a dedicated QUIC stream remains a follow-up.
+
+[#6]: https://github.com/Adjoint-uk/cross-control/issues/6
+[#7]: https://github.com/Adjoint-uk/cross-control/issues/7
+
+### Added — Phase 2: live status readout ([#13]) and TOML layout validation ([#9])
+
+- **`cross-control status` now shows live peers, latency, and focus.** The daemon writes a `StatusSnapshot` (peers with name/state/latency, plus which peer holds focus) to `cross-control.status.json` in the runtime dir every couple of seconds; the `status` command reads and renders it as a table. This is the CLI↔daemon channel the previous `status` lacked — it mirrors the PID-file pattern rather than standing up a full IPC socket. A richer query/subscribe channel can replace the file later without changing the rendered output.
+- **Real latency, not a stub.** The daemon pings each peer on a 2-second cadence and records the round-trip time when the `Pong` returns (a new `LatencyTracker` per session). `status` shows `—` until the first ping completes, then `N ms`.
+- **`Config::validate()` for screen layouts.** Loading a config now rejects layouts that would silently misroute the cursor: empty or duplicate screen names, a screen sharing this machine's `identity.name`, two screens on the same local edge, self-loop adjacency edges, one screen given two neighbors on the same edge, and `[[screen_adjacency]]` blocks that never connect back to this machine (a typo or dead island). Multi-hop screens introduced only via `[[screen_adjacency]]` are correctly accepted — reachability is checked to a fixpoint, not against `[[screens]]` alone.
+- **Documented layout format.** `examples/config.toml` now explains `[[screens]]` vs `[[screen_adjacency]]`, the optional `address`/`fingerprint`, and gives a worked multi-hop example.
+
+### Changed
+
+- `DaemonEvent::SessionReady` now boxes its `PeerSession` payload (the session grew a latency tracker; boxing keeps the enum variants balanced).
+
+### Test coverage
+
+- 84 tests pass workspace-wide (was 70). New: `Config::validate` cases, `StatusSnapshot` JSON round-trip, and `LatencyTracker` ping/pong bookkeeping. Still 2 ignored (`mdns_loopback`, `arboard_backend` — both need host facilities unavailable in CI).
+
+[#9]: https://github.com/Adjoint-uk/cross-control/issues/9
+[#13]: https://github.com/Adjoint-uk/cross-control/issues/13
+
+### Added — loopback demo and systemd user service ([#11])
+
+- **`loopback` example.** `cargo run -p cross-control-daemon --example loopback` runs two daemons in one process on `127.0.0.1` and drives a full session — QUIC handshake, device announce, edge-based cursor crossing, and input forwarding — with no second machine, no root, and no display server. It asserts the forwarded keypress lands on the receiving daemon and narrates each step. Built with `--features linux -- --real`, the receiver injects into a real uinput device so the cursor visibly moves. This makes everything *between* the two physical ends reproducible on one box; only real evdev capture and a live compositor remain for hardware bring-up.
+- **systemd user service, fixed up ([#11]).** `systemd/cross-control.service` is now a correct, documented user unit: dropped the `network-online.target` ordering (unavailable in the user manager; the daemon reconnects on its own), added install/prerequisite comments, and reconciled the copy `install.sh` generates so the two no longer diverge. README gains a "Run as a service" section covering enable, logs, lingering, and the `input`/`uinput` prerequisites.
+
+[#11]: https://github.com/Adjoint-uk/cross-control/issues/11
+
 ### Added — Phase 2 opener: clipboard text sync
 
 - **`cross-control-clipboard` backends.** `ArboardClipboard` (default feature `arboard`) for the real system clipboard on X11, macOS, Windows, and wlroots-based Wayland; `MockClipboard` (feature `mock`) for tests and headless daemon runs. The trait now requires `Send + Sync + 'static` so the daemon can hold `&self.clipboard` across `.await` on a multi-thread runtime.

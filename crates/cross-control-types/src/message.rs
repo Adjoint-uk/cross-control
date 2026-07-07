@@ -9,10 +9,13 @@ use crate::clipboard::{ClipboardContent, ClipboardFormat};
 use crate::device::{DeviceId, DeviceInfo};
 use crate::event::InputEvent;
 use crate::machine::MachineId;
-use crate::screen::{ScreenEdge, ScreenGeometry};
+use crate::screen::{DisplayLayout, ScreenEdge};
 
 /// Current protocol version.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 1 };
+///
+/// Bumped to 0.2 when `Hello`/`Welcome`/`ScreenUpdate` began carrying a
+/// [`DisplayLayout`] (multi-monitor) instead of a single `ScreenGeometry`.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 2 };
 
 /// Protocol version for compatibility negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
@@ -43,7 +46,7 @@ pub enum ControlMessage {
         version: ProtocolVersion,
         machine_id: MachineId,
         name: String,
-        screen: ScreenGeometry,
+        layout: DisplayLayout,
     },
 
     /// Response to Hello.
@@ -51,7 +54,7 @@ pub enum ControlMessage {
         version: ProtocolVersion,
         machine_id: MachineId,
         name: String,
-        screen: ScreenGeometry,
+        layout: DisplayLayout,
     },
 
     /// Announce a new input device.
@@ -60,8 +63,8 @@ pub enum ControlMessage {
     /// An input device was removed.
     DeviceGone { device_id: DeviceId },
 
-    /// Screen geometry changed (e.g. monitor added/removed).
-    ScreenUpdate(ScreenGeometry),
+    /// Display layout changed (e.g. monitor added/removed).
+    ScreenUpdate(DisplayLayout),
 
     /// Cursor is crossing to the remote machine.
     Enter {
@@ -148,7 +151,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             machine_id: MachineId::new(),
             name: "test-machine".to_string(),
-            screen: ScreenGeometry::new(1920, 1080),
+            layout: DisplayLayout::single(1920, 1080),
         });
         let _decoded = bincode_roundtrip(&msg);
     }
@@ -159,7 +162,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             machine_id: MachineId::new(),
             name: "remote".to_string(),
-            screen: ScreenGeometry::new(2560, 1440),
+            layout: DisplayLayout::single(2560, 1440),
         });
         let _decoded = bincode_roundtrip(&msg);
     }
@@ -244,6 +247,6 @@ mod tests {
 
     #[test]
     fn protocol_version_display() {
-        assert_eq!(PROTOCOL_VERSION.to_string(), "0.1");
+        assert_eq!(PROTOCOL_VERSION.to_string(), "0.2");
     }
 }

@@ -47,6 +47,20 @@ impl ClipboardProvider for MockClipboard {
         guard.clone().ok_or(ClipboardError::FormatUnavailable)
     }
 
+    async fn get_format(
+        &self,
+        format: ClipboardFormat,
+    ) -> Result<ClipboardContent, ClipboardError> {
+        let guard = self
+            .state
+            .lock()
+            .map_err(|_| ClipboardError::AccessDenied)?;
+        match guard.as_ref() {
+            Some(content) if content.format == format => Ok(content.clone()),
+            _ => Err(ClipboardError::FormatUnavailable),
+        }
+    }
+
     async fn set(&mut self, content: ClipboardContent) -> Result<(), ClipboardError> {
         {
             let mut guard = self
@@ -134,5 +148,27 @@ mod tests {
             cb.available_formats().await.unwrap(),
             vec![ClipboardFormat::PlainText]
         );
+    }
+
+    #[tokio::test]
+    async fn get_format_matches_stored_format() {
+        let mut cb = MockClipboard::new();
+        cb.set(ClipboardContent::html("<i>hi</i>")).await.unwrap();
+        let got = cb.get_format(ClipboardFormat::Html).await.unwrap();
+        assert_eq!(got.as_html(), Some("<i>hi</i>"));
+        // A different format isn't available.
+        assert!(matches!(
+            cb.get_format(ClipboardFormat::Png).await,
+            Err(ClipboardError::FormatUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_format_returns_png() {
+        let mut cb = MockClipboard::new();
+        cb.set(ClipboardContent::png(vec![1, 2, 3])).await.unwrap();
+        let got = cb.get_format(ClipboardFormat::Png).await.unwrap();
+        assert_eq!(got.format, ClipboardFormat::Png);
+        assert_eq!(got.data, vec![1, 2, 3]);
     }
 }

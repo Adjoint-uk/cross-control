@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cross_control_clipboard::ClipboardProvider;
 use cross_control_discovery::{
@@ -11,8 +12,8 @@ use cross_control_discovery::{
 use cross_control_input::{InputCapture, InputEmulation};
 use cross_control_protocol::QuicTransport;
 use cross_control_types::{
-    CapturedEvent, ClipboardFormat, ClipboardMessage, ControlMessage, DeviceInfo, InputEvent,
-    InputMessage, KeyCode, MachineId, ScreenEdge, ScreenGeometry,
+    CapturedEvent, ClipboardFormat, ClipboardMessage, ControlMessage, DeviceInfo, DisplayLayout,
+    InputEvent, InputMessage, KeyCode, MachineId, ScreenEdge, ScreenGeometry,
 };
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -20,6 +21,11 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 use crate::error::DaemonError;
 use crate::session::PeerSession;
+use crate::status::{status_file_path, PeerStatus, StatusSnapshot};
+
+/// How often the daemon pings each peer for latency and writes the status
+/// snapshot file the CLI reads.
+const STATUS_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Events processed by the daemon's main loop.
 pub enum DaemonEvent {
@@ -39,8 +45,9 @@ pub enum DaemonEvent {
     },
     /// A peer disconnected.
     PeerDisconnected(MachineId),
-    /// A fully handshaked session is ready (from a background task).
-    SessionReady { session: PeerSession },
+    /// A fully handshaked session is ready (from a background task). Boxed
+    /// because `PeerSession` is much larger than the other variants.
+    SessionReady { session: Box<PeerSession> },
     /// Shutdown signal.
     Shutdown,
 }
@@ -71,6 +78,10 @@ impl Default for DaemonStatus {
 pub struct Daemon {
     config: Config,
     machine_id: MachineId,
+    /// This machine's full monitor layout, sent to peers in the handshake.
+    layout: DisplayLayout,
+    /// Bounding box of `layout` — the combined desktop used for all edge
+    /// detection and cursor clamping.
     screen: ScreenGeometry,
     transport: QuicTransport,
     capture: Box<dyn InputCapture>,
@@ -109,6 +120,14 @@ pub struct Daemon {
     /// skip it. When `Some`, the daemon syncs the text clipboard on each
     /// control hand-off.
     clipboard: Option<Box<dyn ClipboardProvider>>,
+    /// Latest status snapshot, shared with the file-writer task that the CLI
+    /// reads. Updated on peer, focus, and latency changes.
+    status_snapshot: Arc<Mutex<StatusSnapshot>>,
+    /// Monotonic sequence for liveness pings.
+    next_ping_seq: u64,
+    /// Handle to the background task that persists the status snapshot, so it
+    /// can be stopped cleanly on shutdown before the file is removed.
+    status_writer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Daemon {
@@ -120,7 +139,8 @@ impl Daemon {
         capture: Box<dyn InputCapture>,
         emulation: Box<dyn InputEmulation>,
     ) -> Self {
-        let screen = ScreenGeometry::new(config.daemon.screen_width, config.daemon.screen_height);
+        let layout = config.display_layout();
+        let screen = layout.bounding_box();
         let (event_tx, event_rx) = mpsc::channel(1024);
         let cursor_x = i32::try_from(screen.width / 2).unwrap_or(960);
         let cursor_y = i32::try_from(screen.height / 2).unwrap_or(540);
@@ -153,6 +173,7 @@ impl Daemon {
             cursor_y,
             config,
             machine_id,
+            layout,
             screen,
             transport,
             capture,
@@ -170,6 +191,9 @@ impl Daemon {
             local_fingerprint: None,
             dialed_addrs: Arc::new(Mutex::new(HashSet::new())),
             clipboard: None,
+            status_snapshot: Arc::new(Mutex::new(StatusSnapshot::default())),
+            next_ping_seq: 0,
+            status_writer: None,
         }
     }
 
@@ -231,7 +255,7 @@ impl Daemon {
             let event_tx = self.event_tx.clone();
             let our_id = self.machine_id;
             let our_name = self.config.identity.name.clone();
-            let our_screen = self.screen.clone();
+            let our_layout = self.layout.clone();
             let local_devices = self.local_devices.clone();
             tokio::spawn(async move {
                 loop {
@@ -239,12 +263,12 @@ impl Daemon {
                         Ok(conn) => {
                             let tx = event_tx.clone();
                             let name = our_name.clone();
-                            let screen = our_screen.clone();
+                            let layout = our_layout.clone();
                             let devs = local_devices.clone();
                             tokio::spawn(async move {
                                 let remote = conn.remote_address();
                                 match perform_handshake_responder(
-                                    conn, our_id, &name, &screen, &devs,
+                                    conn, our_id, &name, &layout, &devs,
                                 )
                                 .await
                                 {
@@ -254,8 +278,11 @@ impl Daemon {
                                             remote = %remote,
                                             "inbound handshake complete"
                                         );
-                                        let _ =
-                                            tx.send(DaemonEvent::SessionReady { session }).await;
+                                        let _ = tx
+                                            .send(DaemonEvent::SessionReady {
+                                                session: Box::new(session),
+                                            })
+                                            .await;
                                     }
                                     Err(e) => {
                                         warn!(
@@ -333,7 +360,7 @@ impl Daemon {
                     let event_tx = self.event_tx.clone();
                     let our_id = self.machine_id;
                     let our_name = self.config.identity.name.clone();
-                    let our_screen = self.screen.clone();
+                    let our_layout = self.layout.clone();
                     let local_devices = self.local_devices.clone();
                     let dialed = Arc::clone(&self.dialed_addrs);
                     tokio::spawn(async move {
@@ -352,7 +379,7 @@ impl Daemon {
                                         peer,
                                         our_id,
                                         our_name.clone(),
-                                        our_screen.clone(),
+                                        our_layout.clone(),
                                         local_devices.clone(),
                                         event_tx.clone(),
                                         Arc::clone(&dialed),
@@ -371,15 +398,102 @@ impl Daemon {
 
         info!("daemon running");
         self.broadcast_status();
+        self.update_snapshot();
 
-        // Main event loop — purely event-driven, never blocks on I/O.
-        while let Some(event) = self.event_rx.recv().await {
-            if self.handle_event(event).await {
-                break;
+        // Persist the status snapshot to disk on a timer so a separate
+        // `cross-control status` process can read live peer/latency/focus
+        // state. Runs as its own task; stopped in `shutdown()`.
+        {
+            let snapshot = Arc::clone(&self.status_snapshot);
+            self.status_writer = Some(tokio::spawn(async move {
+                let path = status_file_path();
+                let mut ticker = tokio::time::interval(STATUS_INTERVAL);
+                loop {
+                    ticker.tick().await;
+                    let json = snapshot.lock().ok().and_then(|s| s.to_json().ok());
+                    if let Some(json) = json {
+                        let _ = std::fs::write(&path, json);
+                    }
+                }
+            }));
+        }
+
+        // Ping peers on the same cadence so latency stays fresh. Ticks are
+        // handled on the event loop itself, keeping all session mutation
+        // single-owner. The first tick fires immediately — swallow it.
+        let mut ping_interval = tokio::time::interval(STATUS_INTERVAL);
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ping_interval.tick().await;
+
+        // Main event loop — event-driven, with a periodic ping tick. Never
+        // blocks on I/O.
+        loop {
+            tokio::select! {
+                maybe_event = self.event_rx.recv() => {
+                    match maybe_event {
+                        Some(event) => {
+                            if self.handle_event(event).await {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    self.send_pings().await;
+                }
             }
         }
 
         self.shutdown().await
+    }
+
+    /// Send a liveness ping to every peer and record the send time so the
+    /// round-trip time can be computed when the `Pong` returns. Refreshes the
+    /// status snapshot afterward.
+    async fn send_pings(&mut self) {
+        let seq = self.next_ping_seq;
+        self.next_ping_seq = self.next_ping_seq.wrapping_add(1);
+        for session in self.sessions.values_mut() {
+            if session
+                .control_tx
+                .send(&ControlMessage::Ping { seq })
+                .await
+                .is_ok()
+            {
+                session.record_ping_sent(seq);
+            }
+        }
+        self.update_snapshot();
+    }
+
+    /// Rebuild the shared status snapshot from current sessions and focus.
+    /// Cheap — a handful of peers — and called only on peer/focus/latency
+    /// transitions, never on the mouse-move hot path.
+    fn update_snapshot(&self) {
+        let peers = self
+            .sessions
+            .values()
+            .map(|s| PeerStatus {
+                name: s.name.clone(),
+                machine_id: s.machine_id.to_string(),
+                address: s.connection.remote_address().to_string(),
+                state: s.state.to_string(),
+                latency_ms: s
+                    .last_rtt()
+                    .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            })
+            .collect();
+        let name_of = |id: MachineId| self.sessions.get(&id).map(|s| s.name.clone());
+        let snapshot = StatusSnapshot {
+            name: self.config.identity.name.clone(),
+            controlling: self.controlling.and_then(name_of),
+            controlled_by: self.controlled_by.and_then(name_of),
+            peers,
+        };
+        if let Ok(mut snap) = self.status_snapshot.lock() {
+            *snap = snapshot;
+        }
     }
 
     /// Handle a single daemon event. Returns `true` if the daemon should shut down.
@@ -398,7 +512,7 @@ impl Daemon {
                 self.handle_peer_disconnected(machine_id).await;
             }
             DaemonEvent::SessionReady { session } => {
-                self.handle_session_ready(session);
+                self.handle_session_ready(*session);
             }
             DaemonEvent::Shutdown => {
                 info!("shutting down");
@@ -409,20 +523,24 @@ impl Daemon {
                 let tx = self.event_tx.clone();
                 let our_id = self.machine_id;
                 let our_name = self.config.identity.name.clone();
-                let our_screen = self.screen.clone();
+                let our_layout = self.layout.clone();
                 let local_devices = self.local_devices.clone();
                 tokio::spawn(async move {
                     match perform_handshake_responder(
                         conn,
                         our_id,
                         &our_name,
-                        &our_screen,
+                        &our_layout,
                         &local_devices,
                     )
                     .await
                     {
                         Ok(session) => {
-                            let _ = tx.send(DaemonEvent::SessionReady { session }).await;
+                            let _ = tx
+                                .send(DaemonEvent::SessionReady {
+                                    session: Box::new(session),
+                                })
+                                .await;
                         }
                         Err(e) => {
                             warn!(error = %e, "incoming connection handshake failed");
@@ -432,6 +550,10 @@ impl Daemon {
             }
         }
         self.broadcast_status();
+        // Refresh the CLI-facing snapshot after every transition. Cheap (a
+        // few peers) and keeps peers/latency/focus current without touching
+        // the file — the writer task persists it on its own timer.
+        self.update_snapshot();
         false
     }
 
@@ -833,6 +955,9 @@ impl Daemon {
             }
             ControlMessage::Pong { seq } => {
                 debug!(peer = %machine_id, seq, "received pong");
+                if let Some(session) = self.sessions.get_mut(&machine_id) {
+                    session.record_pong(seq);
+                }
             }
             ControlMessage::Clipboard(cb_msg) => {
                 self.handle_clipboard_message(machine_id, cb_msg).await;
@@ -875,11 +1000,10 @@ impl Daemon {
         match msg {
             ClipboardMessage::Offer { formats, size_hint } => {
                 debug!(peer = %peer_id, ?formats, size_hint, "received clipboard offer");
-                // Prefer PlainText for now. HTML/PNG round-trip is defined in
-                // the wire protocol but no backend yet sets them.
-                let format = if formats.contains(&ClipboardFormat::PlainText) {
-                    ClipboardFormat::PlainText
-                } else {
+                // Request the richest format the peer offers that we know how
+                // to apply: an image beats HTML, HTML beats plain text.
+                let Some(format) = richest_format(&formats) else {
+                    debug!(peer = %peer_id, "offer had no format we support");
                     return;
                 };
                 let request = ControlMessage::Clipboard(ClipboardMessage::Request { format });
@@ -893,17 +1017,27 @@ impl Daemon {
                 let Some(clipboard) = self.clipboard.as_ref() else {
                     return;
                 };
-                if format != ClipboardFormat::PlainText {
-                    debug!(?format, "clipboard request for unsupported format");
-                    return;
-                }
-                let content = match clipboard.get().await {
+                let content = match clipboard.get_format(format).await {
                     Ok(c) => c,
                     Err(e) => {
-                        debug!(error = %e, "clipboard get failed; ignoring request");
+                        debug!(?format, error = %e, "clipboard get failed; ignoring request");
                         return;
                     }
                 };
+                // Enforce the configured size cap before putting a large
+                // payload on the wire. Streaming large images is a follow-up;
+                // for now oversized content is simply not synced.
+                let max = self.config.clipboard.max_size;
+                if content.size() > max {
+                    warn!(
+                        peer = %peer_id,
+                        size = content.size(),
+                        max,
+                        ?format,
+                        "clipboard content exceeds max_size; not sending"
+                    );
+                    return;
+                }
                 let data = ControlMessage::Clipboard(ClipboardMessage::Data(content));
                 if let Some(session) = self.sessions.get_mut(&peer_id) {
                     if let Err(e) = session.control_tx.send(&data).await {
@@ -912,6 +1046,16 @@ impl Daemon {
                 }
             }
             ClipboardMessage::Data(content) => {
+                let max = self.config.clipboard.max_size;
+                if content.size() > max {
+                    warn!(
+                        peer = %peer_id,
+                        size = content.size(),
+                        max,
+                        "received oversized clipboard content; rejecting"
+                    );
+                    return;
+                }
                 let Some(clipboard) = self.clipboard.as_mut() else {
                     return;
                 };
@@ -1026,6 +1170,13 @@ impl Daemon {
     async fn shutdown(&mut self) -> Result<(), DaemonError> {
         info!("daemon shutting down");
 
+        // Stop the status writer before removing its file so it can't
+        // recreate it after cleanup.
+        if let Some(writer) = self.status_writer.take() {
+            writer.abort();
+        }
+        let _ = std::fs::remove_file(status_file_path());
+
         // Disconnect all peers
         let peer_ids: Vec<MachineId> = self.sessions.keys().copied().collect();
         for peer_id in peer_ids {
@@ -1049,6 +1200,19 @@ impl Daemon {
     pub fn set_local_devices(&mut self, devices: Vec<DeviceInfo>) {
         self.local_devices = devices;
     }
+}
+
+/// Pick the richest clipboard format from an offer that we can apply locally:
+/// image first, then HTML, then plain text. Returns `None` if the offer
+/// contains no format we recognise.
+fn richest_format(formats: &[ClipboardFormat]) -> Option<ClipboardFormat> {
+    [
+        ClipboardFormat::Png,
+        ClipboardFormat::Html,
+        ClipboardFormat::PlainText,
+    ]
+    .into_iter()
+    .find(|f| formats.contains(f))
 }
 
 /// Try to reserve a `SocketAddr` for an outbound dial. Returns `true` if this
@@ -1079,7 +1243,7 @@ fn spawn_outbound_handshake(
     peer: Peer,
     our_id: MachineId,
     our_name: String,
-    our_screen: ScreenGeometry,
+    our_layout: DisplayLayout,
     local_devices: Vec<DeviceInfo>,
     event_tx: mpsc::Sender<DaemonEvent>,
     dialed: Arc<Mutex<HashSet<SocketAddr>>>,
@@ -1092,7 +1256,7 @@ fn spawn_outbound_handshake(
                     conn,
                     our_id,
                     &our_name,
-                    &our_screen,
+                    &our_layout,
                     &local_devices,
                 )
                 .await
@@ -1104,7 +1268,9 @@ fn spawn_outbound_handshake(
                             "outbound handshake complete"
                         );
                         if event_tx
-                            .send(DaemonEvent::SessionReady { session })
+                            .send(DaemonEvent::SessionReady {
+                                session: Box::new(session),
+                            })
                             .await
                             .is_err()
                         {
@@ -1140,13 +1306,13 @@ async fn perform_handshake_responder(
     conn: cross_control_protocol::PeerConnection,
     our_id: MachineId,
     our_name: &str,
-    our_screen: &ScreenGeometry,
+    our_layout: &DisplayLayout,
     local_devices: &[DeviceInfo],
 ) -> Result<PeerSession, DaemonError> {
     let (control_tx, control_rx) = conn.accept_control_stream().await?;
     let mut session = PeerSession::new(conn, control_tx, control_rx);
     session
-        .handshake_responder(our_id, our_name, our_screen)
+        .handshake_responder(our_id, our_name, our_layout)
         .await?;
     session.announce_devices(local_devices).await?;
     Ok(session)
@@ -1158,13 +1324,13 @@ async fn perform_handshake_initiator(
     conn: cross_control_protocol::PeerConnection,
     our_id: MachineId,
     our_name: &str,
-    our_screen: &ScreenGeometry,
+    our_layout: &DisplayLayout,
     local_devices: &[DeviceInfo],
 ) -> Result<PeerSession, DaemonError> {
     let (control_tx, control_rx) = conn.open_control_stream().await?;
     let mut session = PeerSession::new(conn, control_tx, control_rx);
     session
-        .handshake_initiator(our_id, our_name, our_screen)
+        .handshake_initiator(our_id, our_name, our_layout)
         .await?;
     session.announce_devices(local_devices).await?;
     Ok(session)

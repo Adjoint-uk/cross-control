@@ -143,6 +143,42 @@ cross-control status
 
 See [docs/setup-guide.md](docs/setup-guide.md) for detailed setup instructions and troubleshooting.
 
+### Run as a service
+
+To keep the daemon running across logins, install the systemd **user** unit:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/cross-control.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now cross-control
+systemctl --user status cross-control     # check it's running
+journalctl --user -u cross-control -f      # follow logs
+```
+
+The install script offers to do this for you. Two prerequisites, since input
+capture/emulation needs device access: your user must be in the `input` group,
+and `/dev/uinput` must be group-readable/writable (see **Linux permissions
+setup** above). To have the service start before you log in, enable lingering:
+`sudo loginctl enable-linger $USER`. The unit assumes the binary is on
+`~/.cargo/bin`; if you installed elsewhere, adjust `ExecStart` with
+`systemctl --user edit cross-control`.
+
+## Try it on one machine
+
+No second computer? The `loopback` example runs two daemons in one process and
+drives a full session — handshake, cursor crossing, input forwarding — end to
+end on `127.0.0.1`:
+
+```bash
+cargo run -p cross-control-daemon --example loopback
+```
+
+On a Linux desktop with `/dev/uinput` access, add `--features linux -- --real`
+to have the receiving daemon inject into a real virtual device so you can watch
+the cursor move. This covers everything except the physical input ends
+(real evdev capture and a live compositor).
+
 ## Architecture
 
 ```
