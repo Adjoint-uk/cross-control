@@ -32,7 +32,17 @@ get preview URLs.
 
 - `index.html` — the page (edit here).
 - `_headers` — Cloudflare Pages security + caching headers.
+- `og.png` — 1200×630 social preview card (referenced from `index.html`'s
+  `og:image` / `twitter:image`).
+- `og.html` — source for the card. To regenerate `og.png` after editing it,
+  screenshot it at 1200×630 with a headless browser, e.g.:
 
-## TODO
-
-- Add an `og:image` (a 1200×630 preview card) for richer social/link unfurls.
+  ```js
+  // node with playwright
+  const { chromium } = require('playwright');
+  const b = await chromium.launch();
+  const p = await b.newPage({ viewport: { width: 1200, height: 630 }, colorScheme: 'dark' });
+  await p.goto('file://' + require('path').resolve('site/og.html'));
+  await p.screenshot({ path: 'site/og.png', clip: { x:0, y:0, width:1200, height:630 } });
+  await b.close();
+  ```
