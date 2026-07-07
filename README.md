@@ -6,6 +6,9 @@
 
 [![CI](https://github.com/Adjoint-uk/cross-control/actions/workflows/ci.yml/badge.svg)](https://github.com/Adjoint-uk/cross-control/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![Website](https://img.shields.io/badge/web-cross--control.adjoint.uk-3BE0CE.svg)](https://cross-control.adjoint.uk)
+
+**Website:** [cross-control.adjoint.uk](https://cross-control.adjoint.uk) · the landing page source lives in [`site/`](site/).
 
 ## Why cross-control?
 
