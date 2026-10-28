@@ -436,6 +436,7 @@ dependencies = [
  "cross-control-certgen",
  "cross-control-types",
  "quinn",
+ "ring",
  "rustls",
  "rustls-pemfile",
  "serde",

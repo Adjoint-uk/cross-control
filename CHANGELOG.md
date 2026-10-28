@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — TOFU certificate pinning is now enforced ([#2])
+
+- **The QUIC client now verifies peer certificates by SHA-256 fingerprint.** Previously the client skipped certificate verification entirely (an MVP placeholder), so the "trust-on-first-use pinning" of ADR 0002 was documented but not enforced. A new `FingerprintVerifier` closes that gap: when a peer's fingerprint is known — from a `[[screens]] fingerprint` entry or an mDNS TXT advert — the TLS handshake is refused unless the presented certificate hashes to it; on genuine first contact (no pin) the certificate is accepted (TOFU). Fingerprints are compared in canonical form, so the colon-grouped config format and the compact mDNS format interoperate.
+- **New `QuicTransport::connect_pinned(addr, name, expected_fingerprint)`**; the daemon dials discovered and configured peers through it, passing the fingerprint each discovery backend already carries. `connect` (first-contact) remains for the unpinned path. The self-signed certificate's signature is trusted because the trust anchor is the fingerprint, not a CA chain.
+
+[#2]: https://github.com/Adjoint-uk/cross-control/issues/2
+
 ### Added — Phase 2: multi-monitor support ([#8])
 
 - **Machines can expose multiple monitors.** New `DisplayLayout { monitors: Vec<ScreenGeometry> }` type describes a machine's full monitor arrangement, configured via a `[[monitors]]` list (each with `width`, `height`, and top-left `x`/`y` offset). When no monitors are listed, the daemon falls back to a single monitor sized by `daemon.screen_width`/`screen_height`, so existing configs are unchanged.

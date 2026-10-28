@@ -19,6 +19,7 @@ bincode = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+ring = { workspace = true }
 
 [dev-dependencies]
 cross-control-certgen = { workspace = true }

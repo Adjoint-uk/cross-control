@@ -1250,7 +1250,10 @@ fn spawn_outbound_handshake(
 ) {
     tokio::spawn(async move {
         let addr = peer.address;
-        match transport.connect(addr, "cross-control").await {
+        match transport
+            .connect_pinned(addr, "cross-control", peer.fingerprint.clone())
+            .await
+        {
             Ok(conn) => {
                 match perform_handshake_initiator(
                     conn,
