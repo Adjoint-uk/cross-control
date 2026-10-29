@@ -25,7 +25,9 @@ impl QuicTransport {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let server_config = tls::server_config(cert_pem, key_pem)?;
-        let client_config = tls::client_config_skip_verification()?;
+        // Default client config pins nothing (first-contact TOFU); callers that
+        // know the peer's fingerprint use `connect_pinned` to enforce it.
+        let client_config = tls::client_config_pinned(None)?;
 
         let mut endpoint = Endpoint::server(server_config, addr)
             .map_err(|e| ProtocolError::Connection(e.to_string()))?;
@@ -52,7 +54,8 @@ impl QuicTransport {
         Ok(PeerConnection::new(connection))
     }
 
-    /// Connect to a remote peer.
+    /// Connect to a remote peer, using the default (first-contact) client
+    /// config — the presented certificate is accepted whatever its fingerprint.
     pub async fn connect(
         &self,
         addr: SocketAddr,
@@ -66,6 +69,29 @@ impl QuicTransport {
             .map_err(|e| ProtocolError::Connection(e.to_string()))?;
 
         debug!(remote = %addr, "connected to peer");
+        Ok(PeerConnection::new(connection))
+    }
+
+    /// Connect to a remote peer, pinning its certificate by SHA-256
+    /// fingerprint. When `expected_fingerprint` is `Some`, the TLS handshake
+    /// fails unless the peer presents a certificate with that fingerprint;
+    /// when `None`, this behaves like [`connect`](Self::connect) (first-contact
+    /// TOFU).
+    pub async fn connect_pinned(
+        &self,
+        addr: SocketAddr,
+        server_name: &str,
+        expected_fingerprint: Option<String>,
+    ) -> Result<PeerConnection, ProtocolError> {
+        let client_config = tls::client_config_pinned(expected_fingerprint)?;
+        let connection = self
+            .endpoint
+            .connect_with(client_config, addr, server_name)
+            .map_err(|e| ProtocolError::Connection(e.to_string()))?
+            .await
+            .map_err(|e| ProtocolError::Connection(e.to_string()))?;
+
+        debug!(remote = %addr, "connected to peer (pinned)");
         Ok(PeerConnection::new(connection))
     }
 

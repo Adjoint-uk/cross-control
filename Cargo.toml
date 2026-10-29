@@ -105,6 +105,10 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# `#[async_trait]` expands each method to a `#[must_use]` fn returning a
+# `Pin<Box<dyn Future>>`, which is itself `#[must_use]`; clippy 1.99+ flags the
+# pair. The attribute is macro-generated, so allow it workspace-wide.
+double_must_use = "allow"
 
 [profile.release]
 lto = true

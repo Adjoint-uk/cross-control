@@ -191,3 +191,85 @@ async fn ping_pong_roundtrip() {
     let _ = done_tx.send(());
     server.await.unwrap();
 }
+
+/// Spawn a server accept loop that holds every accepted connection alive so
+/// client-side handshakes can complete.
+fn spawn_accept_loop(transport: cross_control_protocol::QuicTransport) {
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok(conn) = transport.accept().await {
+            held.push(conn);
+        }
+    });
+}
+
+#[tokio::test]
+async fn pinned_connect_accepts_matching_fingerprint() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let server_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let client_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    let server = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &server_cert.cert_pem,
+        &server_cert.key_pem,
+    )
+    .unwrap();
+    let addr = server.local_addr().unwrap();
+    spawn_accept_loop(server);
+
+    let client = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &client_cert.cert_pem,
+        &client_cert.key_pem,
+    )
+    .unwrap();
+
+    // Pinning the server's real fingerprint lets the handshake through.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.connect_pinned(addr, "cross-control", Some(server_cert.fingerprint.clone())),
+    )
+    .await
+    .expect("connect should not time out");
+    assert!(
+        result.is_ok(),
+        "matching fingerprint must connect: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn pinned_connect_rejects_wrong_fingerprint() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let server_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let client_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    let server = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &server_cert.cert_pem,
+        &server_cert.key_pem,
+    )
+    .unwrap();
+    let addr = server.local_addr().unwrap();
+    spawn_accept_loop(server);
+
+    let client = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &client_cert.cert_pem,
+        &client_cert.key_pem,
+    )
+    .unwrap();
+
+    // Pinning a fingerprint the server does not have must refuse the handshake.
+    let bogus = "SHA256:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff".to_string();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.connect_pinned(addr, "cross-control", Some(bogus)),
+    )
+    .await
+    .expect("connect should fail fast, not time out");
+    assert!(result.is_err(), "wrong fingerprint must be rejected");
+}

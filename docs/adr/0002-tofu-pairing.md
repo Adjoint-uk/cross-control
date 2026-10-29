@@ -105,6 +105,8 @@ Standard practice in many projects. Rejected because:
 
 The `known_peers` file does not exist yet — the current implementation pins via the per-screen `fingerprint` field in the config. A `known_peers` file with auto-populated entries is a Phase 2 polish item.
 
+**Enforcement (implemented).** The QUIC client verifier (`cross-control-protocol::tls::FingerprintVerifier`) now enforces pinning: when a peer's SHA-256 fingerprint is known — from a `[[screens]] fingerprint` entry or an mDNS TXT advert — the TLS handshake is refused unless the presented certificate hashes to it. When no fingerprint is known (genuine first contact), the certificate is accepted (TOFU) and should be recorded. The self-signed certificate's signature is trusted because the trust anchor is the fingerprint, not a CA chain.
+
 ## Revisit triggers
 
 - A practical attack on TLS 1.3 with self-signed Ed25519 certs.
