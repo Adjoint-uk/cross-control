@@ -34,3 +34,11 @@ hostname = "0.4"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+cross-control-daemon = { workspace = true }
+cross-control-protocol = { workspace = true }
+cross-control-certgen = { workspace = true }
+cross-control-types = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+rustls = { workspace = true }
