@@ -36,9 +36,10 @@ enum Commands {
         output: String,
     },
 
-    /// Pair with a remote machine.
+    /// Pair with a remote machine: fetch its certificate fingerprint and
+    /// print a config entry that pins it.
     Pair {
-        /// Address of the remote machine (host:port).
+        /// Address of the remote machine (host or host:port).
         address: String,
     },
 }
@@ -85,11 +86,71 @@ async fn main() -> anyhow::Result<()> {
             println!("Fingerprint: {}", cert.fingerprint);
         }
         Commands::Pair { address } => {
-            tracing::info!(address = %address, "pairing with remote machine");
-            // TODO: Phase 2 — connect, exchange fingerprints, pin
-            eprintln!("cross-control pairing not yet implemented (Phase 2)");
+            pair_with(&address).await?;
         }
     }
+
+    Ok(())
+}
+
+/// Connect to a peer, learn its name and TLS fingerprint on first contact,
+/// and print a ready-to-paste config entry that pins it.
+async fn pair_with(address: &str) -> anyhow::Result<()> {
+    use cross_control_daemon::session::PeerSession;
+    use cross_control_daemon::setup;
+    use std::net::SocketAddr;
+
+    let config = setup::load_config(None)?;
+    let config_dir = setup::config_dir();
+    let (cert_pem, key_pem) = setup::load_or_generate_certs(&config_dir)?;
+    let machine_id = setup::load_or_create_machine_id(&config_dir)?;
+    let our_name = config.identity.name.clone();
+    let our_layout = config.display_layout();
+
+    // Accept "host" or "host:port"; default to the standard port.
+    let addr: SocketAddr = address
+        .parse()
+        .or_else(|_| format!("{address}:24800").parse())
+        .map_err(|e| anyhow::anyhow!("invalid address '{address}': {e}"))?;
+
+    // Bind an ephemeral endpoint just for this pairing exchange.
+    let bind: SocketAddr = "0.0.0.0:0".parse().unwrap();
+    let transport = cross_control_protocol::QuicTransport::bind(bind, &cert_pem, &key_pem)?;
+
+    println!("Connecting to {addr} …");
+    // First contact: no pin yet, so accept whatever certificate is presented
+    // and read its fingerprint for the user to verify out of band.
+    let conn = transport
+        .connect_pinned(addr, "cross-control", None)
+        .await?;
+    let fingerprint = conn
+        .peer_fingerprint()
+        .ok_or_else(|| anyhow::anyhow!("peer presented no TLS certificate"))?;
+
+    // Handshake so we learn the peer's name and confirm it speaks our protocol.
+    let (control_tx, control_rx) = conn.open_control_stream().await?;
+    let mut session = PeerSession::new(conn, control_tx, control_rx);
+    session
+        .handshake_initiator(machine_id, &our_name, &our_layout)
+        .await?;
+    let peer_name = session.name.clone();
+    let _ = session.disconnect().await;
+
+    println!();
+    println!("Paired with \"{peer_name}\" at {addr}");
+    println!("  Fingerprint: {fingerprint}");
+    println!();
+    println!("Verify that fingerprint on the other machine (`cross-control status`),");
+    println!(
+        "then add this peer to {}:",
+        config_dir.join("config.toml").display()
+    );
+    println!();
+    println!("  [[screens]]");
+    println!("  name = \"{peer_name}\"");
+    println!("  address = \"{}\"", addr.ip());
+    println!("  position = \"Right\"   # Left / Right / Above / Below");
+    println!("  fingerprint = \"{fingerprint}\"");
 
     Ok(())
 }

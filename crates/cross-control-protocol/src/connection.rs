@@ -25,6 +25,17 @@ impl PeerConnection {
         self.connection.remote_address()
     }
 
+    /// The SHA-256 fingerprint of the peer's TLS certificate, in display form
+    /// (`SHA256:aa:bb:…`). `None` if the peer presented no certificate. Used
+    /// by `pair` to show the user a fingerprint to pin.
+    pub fn peer_fingerprint(&self) -> Option<String> {
+        let identity = self.connection.peer_identity()?;
+        let certs = identity
+            .downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>()
+            .ok()?;
+        certs.first().map(crate::tls::fingerprint_display)
+    }
+
     /// Open a bidirectional stream (for control messages).
     pub async fn open_control_stream(
         &self,
