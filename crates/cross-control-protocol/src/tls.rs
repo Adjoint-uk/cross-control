@@ -89,6 +89,21 @@ fn cert_fingerprint_hex(cert: &CertificateDer<'_>) -> String {
     out
 }
 
+/// SHA-256 fingerprint of a DER certificate in the display form
+/// `SHA256:aa:bb:cc:…` — the same shape used in `config.toml` and `status`,
+/// so it can be copy-pasted into a `[[screens]] fingerprint` entry.
+pub fn fingerprint_display(cert: &CertificateDer<'_>) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, cert.as_ref());
+    let mut out = String::from("SHA256:");
+    for (i, byte) in digest.as_ref().iter().enumerate() {
+        if i > 0 {
+            out.push(':');
+        }
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 /// Canonicalize a fingerprint for comparison: drop any `SHA256:` prefix and
 /// `:` separators, then lowercase. Accepts the colon-grouped form from config
 /// (`SHA256:ab:cd:…`) and the compact form from mDNS TXT records alike.

@@ -355,6 +355,7 @@ dependencies = [
  "cross-control-protocol",
  "cross-control-types",
  "hostname",
+ "rustls",
  "serde_json",
  "tokio",
  "toml",

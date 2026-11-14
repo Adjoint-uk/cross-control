@@ -273,3 +273,41 @@ async fn pinned_connect_rejects_wrong_fingerprint() {
     .expect("connect should fail fast, not time out");
     assert!(result.is_err(), "wrong fingerprint must be rejected");
 }
+
+#[tokio::test]
+async fn peer_fingerprint_matches_certgen() {
+    // The fingerprint `pair` shows must be byte-identical to what certgen,
+    // `status`, and mDNS produce, or the pin a user pastes would never match.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let server_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let client_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    let server = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &server_cert.cert_pem,
+        &server_cert.key_pem,
+    )
+    .unwrap();
+    let addr = server.local_addr().unwrap();
+    spawn_accept_loop(server);
+
+    let client = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &client_cert.cert_pem,
+        &client_cert.key_pem,
+    )
+    .unwrap();
+    let conn = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.connect_pinned(addr, "cross-control", None),
+    )
+    .await
+    .expect("connect")
+    .expect("connect ok");
+
+    let fp = conn
+        .peer_fingerprint()
+        .expect("server presented a certificate");
+    assert_eq!(fp, server_cert.fingerprint);
+}
