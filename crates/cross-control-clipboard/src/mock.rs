@@ -137,7 +137,10 @@ mod tests {
     #[tokio::test]
     async fn available_formats_is_empty_when_unset() {
         let cb = MockClipboard::new();
-        assert!(cb.available_formats().await.unwrap().is_empty());
+        assert_eq!(
+            cb.available_formats().await.unwrap(),
+            Vec::<ClipboardFormat>::new()
+        );
     }
 
     #[tokio::test]

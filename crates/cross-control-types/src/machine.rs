@@ -57,7 +57,7 @@ mod tests {
     fn machine_id_display() {
         let id = MachineId::new();
         let s = id.to_string();
-        assert!(!s.is_empty());
+        assert_ne!(s, "");
         // UUID v4 format: 8-4-4-4-12
         assert_eq!(s.len(), 36);
     }
