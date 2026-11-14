@@ -1,0 +1,91 @@
+{
+ "reproduction": {
+  "psoriatic_plateau_totC": 266011.8916384036,
+  "sbml_totC_max": 266011.65,
+  "post_uvb_totC_day449": 79857.4759423558
+ },
+ "flare_threshold": {
+  "0.0": 1676.025390625,
+  "100.0": 1586.9140625,
+  "200.0": 1491.69921875,
+  "300.0": 1389.16015625,
+  "400.0": 1275.634765625,
+  "500.0": 1149.90234375,
+  "600.0": 1004.638671875,
+  "700.0": 834.9609375,
+  "800.0": 627.44140625,
+  "900.0": 360.107421875,
+  "1000.0": 0.0,
+  "1100.0": 0.0,
+  "1200.0": 0.0,
+  "1300.0": 0.0,
+  "1400.0": 0.0,
+  "1500.0": 0.0,
+  "1600.0": 0.0
+ },
+ "hysteresis": {
+  "0": {
+   "switch_on_dc_act": 1940.0,
+   "switch_off_dc_act": 980.0
+  },
+  "500": {
+   "switch_on_dc_act": 1940.0,
+   "switch_off_dc_act": 980.0
+  },
+  "1000": {
+   "switch_on_dc_act": 1880.0,
+   "switch_off_dc_act": 920.0
+  }
+ },
+ "virtual_population": {
+  "candidates": 360,
+  "bistable": 136,
+  "used": 120
+ },
+ "virtual_trial": {
+  "adalimumab": {
+   "PASI75_wk4": 0.03333333333333333,
+   "PASI75_wk16": 0.5916666666666667,
+   "PASI90_wk16": 0.5833333333333334,
+   "PASI90_wk52": 0.6916666666666667,
+   "median_TRM_before": 662.0577230442536,
+   "median_TRM_at_stop": 278.7066546757502,
+   "n_clear_at_stop": 83,
+   "relapse_free_2y": 0.5180722891566263,
+   "median_wk_to_relapse_among_relapsers": 61.75867142117009
+  },
+  "secukinumab": {
+   "PASI75_wk4": 0.2,
+   "PASI75_wk16": 0.7916666666666666,
+   "PASI90_wk16": 0.7666666666666667,
+   "PASI90_wk52": 0.8083333333333333,
+   "median_TRM_before": 662.0577230442536,
+   "median_TRM_at_stop": 235.32438951018156,
+   "n_clear_at_stop": 97,
+   "relapse_free_2y": 0.5257731958762887,
+   "median_wk_to_relapse_among_relapsers": 64.10812731204774
+  },
+  "ustekinumab": {
+   "PASI75_wk4": 0.19166666666666668,
+   "PASI75_wk16": 0.5416666666666666,
+   "PASI90_wk16": 0.5416666666666666,
+   "PASI90_wk52": 0.5583333333333333,
+   "median_TRM_before": 662.0577230442536,
+   "median_TRM_at_stop": 263.1159887063643,
+   "n_clear_at_stop": 67,
+   "relapse_free_2y": 0.4925373134328354,
+   "median_wk_to_relapse_among_relapsers": 54.52649112125253
+  },
+  "risankizumab": {
+   "PASI75_wk4": 0.48333333333333334,
+   "PASI75_wk16": 0.85,
+   "PASI90_wk16": 0.8416666666666667,
+   "PASI90_wk52": 0.875,
+   "median_TRM_before": 662.0577230442536,
+   "median_TRM_at_stop": 157.56687405969186,
+   "n_clear_at_stop": 105,
+   "relapse_free_2y": 0.49523809523809553,
+   "median_wk_to_relapse_among_relapsers": 59.45310808490596
+  }
+ }
+}
