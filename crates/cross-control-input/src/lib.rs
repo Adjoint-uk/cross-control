@@ -35,6 +35,11 @@ pub trait InputCapture: Send + 'static {
     /// Remove a previously registered barrier.
     async fn remove_barrier(&mut self, id: BarrierId) -> Result<(), InputError>;
 
+    /// Grab all devices exclusively so local applications stop receiving
+    /// input while it is forwarded to a remote machine. Capture keeps
+    /// delivering events to the daemon, so the release hotkey still works.
+    async fn grab(&mut self) -> Result<(), InputError>;
+
     /// Release all grabbed devices (give control back to local machine).
     async fn release(&mut self) -> Result<(), InputError>;
 

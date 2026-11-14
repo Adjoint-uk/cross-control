@@ -9,6 +9,8 @@ pub enum SessionState {
     HelloSent,
     /// Handshake complete, idle — no input being forwarded.
     Idle,
+    /// We sent `Enter` and are waiting for `EnterAck` or `EnterReject`.
+    PendingEnter,
     /// This machine is controlling the remote (sending input).
     Controlling,
     /// This machine is being controlled by the remote (receiving input).
@@ -40,6 +42,7 @@ impl std::fmt::Display for SessionState {
             Self::Connected => write!(f, "Connected"),
             Self::HelloSent => write!(f, "HelloSent"),
             Self::Idle => write!(f, "Idle"),
+            Self::PendingEnter => write!(f, "PendingEnter"),
             Self::Controlling => write!(f, "Controlling"),
             Self::Controlled => write!(f, "Controlled"),
             Self::Disconnecting => write!(f, "Disconnecting"),

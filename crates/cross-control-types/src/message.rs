@@ -13,9 +13,11 @@ use crate::screen::{DisplayLayout, ScreenEdge};
 
 /// Current protocol version.
 ///
-/// Bumped to 0.2 when `Hello`/`Welcome`/`ScreenUpdate` began carrying a
-/// [`DisplayLayout`] (multi-monitor) instead of a single `ScreenGeometry`.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 2 };
+/// - 0.2: `Hello`/`Welcome`/`ScreenUpdate` carry a [`DisplayLayout`]
+///   (multi-monitor) instead of a single `ScreenGeometry`.
+/// - 0.3: `Enter` carries `exit_edges`, positions are edge-relative, and
+///   `EnterReject` lets a busy peer refuse a hand-off.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 3 };
 
 /// Protocol version for compatibility negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
@@ -68,10 +70,16 @@ pub enum ControlMessage {
 
     /// Cursor is crossing to the remote machine.
     Enter {
-        /// Which edge the cursor is leaving from.
+        /// Which edge of the sender's screen the cursor is leaving from.
         edge: ScreenEdge,
-        /// Position along the edge (pixels).
+        /// Position along that edge, in pixels from the edge's start (its top
+        /// or left end) on the sender's screen. The receiver scales it to its
+        /// own resolution.
         position: u32,
+        /// Edges of the *receiver's* screen that lead somewhere, according to
+        /// the sender's layout. The receiver sends `Leave` only when the cursor
+        /// reaches one of these, so it needs no layout config of its own.
+        exit_edges: Vec<ScreenEdge>,
     },
 
     /// Acknowledge an Enter; remote is ready to receive input.
@@ -79,9 +87,10 @@ pub enum ControlMessage {
 
     /// Cursor is returning to the local machine.
     Leave {
-        /// Which edge the cursor is entering on.
+        /// Which edge of the sender's screen the cursor left from.
         edge: ScreenEdge,
-        /// Position along the edge (pixels).
+        /// Position along that edge, in pixels from the edge's start on the
+        /// sender's screen.
         position: u32,
     },
 
@@ -105,6 +114,12 @@ pub enum ControlMessage {
 
     /// Graceful disconnect.
     Bye,
+
+    /// Refuse an `Enter`: the receiver is already controlling or being
+    /// controlled, or lost a simultaneous-hand-off tie-break. The sender
+    /// cancels its pending hand-off. Appended last so earlier variants keep
+    /// their wire indices.
+    EnterReject,
 }
 
 /// Input data messages (unidirectional, controller -> controlled).
@@ -182,6 +197,7 @@ mod tests {
         let enter = Message::Control(ControlMessage::Enter {
             edge: ScreenEdge::Right,
             position: 540,
+            exit_edges: vec![ScreenEdge::Left, ScreenEdge::Right],
         });
         let _decoded = bincode_roundtrip(&enter);
 
@@ -247,6 +263,6 @@ mod tests {
 
     #[test]
     fn protocol_version_display() {
-        assert_eq!(PROTOCOL_VERSION.to_string(), "0.2");
+        assert_eq!(PROTOCOL_VERSION.to_string(), "0.3");
     }
 }

@@ -222,11 +222,16 @@ impl PeerSession {
         Ok(())
     }
 
-    /// Send Enter and open input stream (non-blocking — `EnterAck` handled by event loop).
+    /// Send `Enter` and open the input stream. The session moves to
+    /// [`SessionState::PendingEnter`]; the event loop moves it on to
+    /// `Controlling` on `EnterAck`, or back to `Idle` via [`cancel_enter`].
+    ///
+    /// [`cancel_enter`]: Self::cancel_enter
     pub async fn send_enter(
         &mut self,
         edge: cross_control_types::ScreenEdge,
         position: u32,
+        exit_edges: Vec<cross_control_types::ScreenEdge>,
     ) -> Result<(), DaemonError> {
         if !self.state.can_enter_controlling() {
             return Err(DaemonError::Protocol(
@@ -242,13 +247,29 @@ impl PeerSession {
         let input_tx = self.connection.open_input_stream().await?;
         self.input_tx = Some(input_tx);
 
-        let enter = ControlMessage::Enter { edge, position };
-        self.control_tx.send(&enter).await?;
+        let enter = ControlMessage::Enter {
+            edge,
+            position,
+            exit_edges,
+        };
+        if let Err(e) = self.control_tx.send(&enter).await {
+            self.input_tx = None;
+            return Err(e.into());
+        }
 
-        // Transition state so duplicate send_enter calls are rejected
-        self.state = SessionState::Controlling;
-        debug!("sent Enter, waiting for EnterAck via event loop");
+        self.state = SessionState::PendingEnter;
+        debug!("sent Enter, waiting for EnterAck");
         Ok(())
+    }
+
+    /// Abandon a pending `Enter` (rejected, timed out, or yielded in a
+    /// tie-break) and return to `Idle`. No-op in any other state.
+    pub fn cancel_enter(&mut self) {
+        if self.state == SessionState::PendingEnter {
+            self.input_tx = None;
+            self.state = SessionState::Idle;
+            debug!(peer = %self.name, "pending Enter cancelled");
+        }
     }
 
     /// Handle an incoming Enter from the remote peer: send `EnterAck`.
@@ -271,10 +292,29 @@ impl PeerSession {
         Ok(())
     }
 
-    /// Transition to Controlling state (called when `EnterAck` received via event loop).
-    pub fn set_controlling(&mut self) {
+    /// Transition to Controlling (called when `EnterAck` arrives for a
+    /// pending `Enter`). Returns `false` — and changes nothing — if no Enter
+    /// was pending, so an unsolicited ack can be refused.
+    pub fn set_controlling(&mut self) -> bool {
+        if self.state != SessionState::PendingEnter {
+            return false;
+        }
         self.state = SessionState::Controlling;
         info!(peer = %self.name, "now controlling remote");
+        true
+    }
+
+    /// Return to `Idle` from any active state without sending anything (used
+    /// when the peer refuses, or when a send fails).
+    pub fn reset_to_idle(&mut self) {
+        if matches!(
+            self.state,
+            SessionState::PendingEnter | SessionState::Controlling | SessionState::Controlled
+        ) {
+            self.input_tx = None;
+            self.input_rx = None;
+            self.state = SessionState::Idle;
+        }
     }
 
     /// Send Leave message and return to Idle.

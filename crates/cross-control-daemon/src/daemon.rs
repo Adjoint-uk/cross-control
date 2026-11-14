@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cross_control_clipboard::ClipboardProvider;
 use cross_control_discovery::{
@@ -12,8 +12,9 @@ use cross_control_discovery::{
 use cross_control_input::{InputCapture, InputEmulation};
 use cross_control_protocol::QuicTransport;
 use cross_control_types::{
-    CapturedEvent, ClipboardFormat, ClipboardMessage, ControlMessage, DeviceInfo, DisplayLayout,
-    InputEvent, InputMessage, KeyCode, MachineId, ScreenEdge, ScreenGeometry,
+    ButtonState, CapturedEvent, ClipboardFormat, ClipboardMessage, ControlMessage, DeviceInfo,
+    DisplayLayout, InputEvent, InputMessage, KeyCode, MachineId, MouseButton, ScreenEdge,
+    ScreenGeometry, VirtualDeviceId,
 };
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -26,6 +27,104 @@ use crate::status::{status_file_path, PeerStatus, StatusSnapshot};
 /// How often the daemon pings each peer for latency and writes the status
 /// snapshot file the CLI reads.
 const STATUS_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long to wait for `EnterAck` before abandoning a hand-off.
+const ENTER_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// After a refused or timed-out hand-off, how long before we try again, so a
+/// busy peer is not sent an `Enter` on every mouse movement at the edge.
+const ENTER_COOLDOWN: Duration = Duration::from_secs(1);
+
+/// All four screen edges, in a fixed order.
+const ALL_EDGES: [ScreenEdge; 4] = [
+    ScreenEdge::Left,
+    ScreenEdge::Right,
+    ScreenEdge::Top,
+    ScreenEdge::Bottom,
+];
+
+/// A key or mouse button that is currently held down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum HeldInput {
+    Key(KeyCode),
+    Button(MouseButton),
+}
+
+impl HeldInput {
+    /// The held input and its new state, if `event` is a key or button event.
+    fn from_event(event: &InputEvent) -> Option<(Self, ButtonState)> {
+        match event {
+            InputEvent::Key { code, state } => Some((Self::Key(*code), *state)),
+            InputEvent::MouseButton { button, state } => Some((Self::Button(*button), *state)),
+            _ => None,
+        }
+    }
+
+    /// The event that releases this input.
+    fn release_event(self) -> InputEvent {
+        match self {
+            Self::Key(code) => InputEvent::Key {
+                code,
+                state: ButtonState::Released,
+            },
+            Self::Button(button) => InputEvent::MouseButton {
+                button,
+                state: ButtonState::Released,
+            },
+        }
+    }
+}
+
+/// Track presses and releases into a held-input set.
+fn track_held(held: &mut HashSet<HeldInput>, event: &InputEvent) {
+    if let Some((input, state)) = HeldInput::from_event(event) {
+        match state {
+            ButtonState::Pressed => {
+                held.insert(input);
+            }
+            ButtonState::Released => {
+                held.remove(&input);
+            }
+        }
+    }
+}
+
+/// Scale a position along an edge from a source length to a target length,
+/// clamped to the target range.
+fn scale_along_edge(position: u32, source_len: u32, target_len: u32) -> u32 {
+    let max = target_len.saturating_sub(1);
+    if source_len == 0 {
+        return position.min(max);
+    }
+    let scaled = u64::from(position) * u64::from(target_len) / u64::from(source_len);
+    u32::try_from(scaled).unwrap_or(u32::MAX).min(max)
+}
+
+/// The last pixel on each axis of `screen` (inclusive).
+fn screen_max(screen: &ScreenGeometry) -> (i32, i32) {
+    let last = |origin: i32, len: u32| {
+        origin
+            .saturating_add(i32::try_from(len).unwrap_or(i32::MAX))
+            .saturating_sub(1)
+            .max(origin)
+    };
+    (last(screen.x, screen.width), last(screen.y, screen.height))
+}
+
+/// Clamp a point to `screen`, which may start anywhere (multi-monitor layouts
+/// can have negative origins).
+fn clamp_point(screen: &ScreenGeometry, x: i32, y: i32) -> (i32, i32) {
+    let (x1, y1) = screen_max(screen);
+    (x.clamp(screen.x, x1), y.clamp(screen.y, y1))
+}
+
+/// Length of a screen's edge: height for left/right edges, width for top/bottom.
+fn edge_len(screen: &ScreenGeometry, edge: ScreenEdge) -> u32 {
+    match edge {
+        ScreenEdge::Left | ScreenEdge::Right => screen.height,
+        ScreenEdge::Top | ScreenEdge::Bottom => screen.width,
+    }
+}
 
 /// Events processed by the daemon's main loop.
 pub enum DaemonEvent {
@@ -104,6 +203,21 @@ pub struct Daemon {
     entry_edge: Option<ScreenEdge>,
     /// Hotkey state tracking: set of currently pressed keys.
     hotkey_pressed: Vec<KeyCode>,
+    /// Peer we sent `Enter` to and when, while we wait for `EnterAck`.
+    pending_enter: Option<(MachineId, Instant)>,
+    /// No new hand-off is started before this instant (see [`ENTER_COOLDOWN`]).
+    enter_cooldown_until: Option<Instant>,
+    /// Keys and buttons physically held on this machine. A hand-off waits
+    /// until none are held: grabbing the devices mid-press would leave the
+    /// key stuck down in local applications.
+    local_held: HashSet<HeldInput>,
+    /// Keys and buttons we injected on behalf of the controlling peer and
+    /// have not released yet, per virtual device. Released when control
+    /// leaves, so nothing stays pressed.
+    injected_held: HashMap<VirtualDeviceId, HashSet<HeldInput>>,
+    /// While controlled: the edges of our screen that lead somewhere, as told
+    /// by the controller in `Enter`. Reaching one sends `Leave`.
+    exit_edges: Vec<ScreenEdge>,
     /// Status broadcast channel.
     status_tx: watch::Sender<DaemonStatus>,
     /// Full screen adjacency graph: `(screen_name, edge) → neighbor_name`.
@@ -142,8 +256,12 @@ impl Daemon {
         let layout = config.display_layout();
         let screen = layout.bounding_box();
         let (event_tx, event_rx) = mpsc::channel(1024);
-        let cursor_x = i32::try_from(screen.width / 2).unwrap_or(960);
-        let cursor_y = i32::try_from(screen.height / 2).unwrap_or(540);
+        let cursor_x = screen
+            .x
+            .saturating_add(i32::try_from(screen.width / 2).unwrap_or(960));
+        let cursor_y = screen
+            .y
+            .saturating_add(i32::try_from(screen.height / 2).unwrap_or(540));
         let (status_tx, _) = watch::channel(DaemonStatus {
             cursor_x,
             cursor_y,
@@ -186,6 +304,11 @@ impl Daemon {
             controlled_by: None,
             entry_edge: None,
             hotkey_pressed: Vec::new(),
+            pending_enter: None,
+            enter_cooldown_until: None,
+            local_held: HashSet::new(),
+            injected_held: HashMap::new(),
+            exit_edges: Vec::new(),
             status_tx,
             adjacency,
             local_fingerprint: None,
@@ -440,6 +563,7 @@ impl Daemon {
                     }
                 }
                 _ = ping_interval.tick() => {
+                    self.expire_pending_enter();
                     self.send_pings().await;
                 }
             }
@@ -670,67 +794,130 @@ impl Daemon {
     }
 
     async fn handle_captured_input(&mut self, captured: CapturedEvent) {
-        // Track hotkey state
         self.update_hotkey_state(&captured.event);
+        track_held(&mut self.local_held, &captured.event);
+        self.expire_pending_enter();
 
-        // Check release hotkey
-        if self.is_release_hotkey_pressed() && self.controlling.is_some() {
+        // The release hotkey always wins: it ends control, and also abandons
+        // a hand-off that is still waiting for its ack.
+        if self.is_release_hotkey_pressed()
+            && (self.controlling.is_some() || self.pending_enter.is_some())
+        {
             self.release_control().await;
             return;
         }
 
-        // If we're controlling a remote, forward the event
+        // If we're controlling a remote, forward the event.
         if let Some(peer_id) = self.controlling {
-            if let Some(session) = self.sessions.get_mut(&peer_id) {
-                let msg = InputMessage {
-                    device_id: captured.device_id,
-                    timestamp_us: captured.timestamp_us,
-                    events: vec![captured.event],
-                };
-                debug!(peer = %peer_id, device = ?msg.device_id, "forwarding input to peer");
-                if let Err(e) = session.send_input(&msg).await {
-                    warn!(error = %e, "failed to send input to peer");
-                    self.controlling = None;
-                    let _ = self.capture.release().await;
-                }
+            let msg = InputMessage {
+                device_id: captured.device_id,
+                timestamp_us: captured.timestamp_us,
+                events: vec![captured.event],
+            };
+            let sent = match self.sessions.get_mut(&peer_id) {
+                Some(session) => session.send_input(&msg).await,
+                None => Ok(()),
+            };
+            if let Err(e) = sent {
+                warn!(peer = %peer_id, error = %e, "failed to send input to peer; taking control back");
+                self.drop_control(peer_id).await;
             }
             return;
         }
 
-        // Track cursor position for barrier detection
+        // Track the virtual cursor for barrier detection.
         if let InputEvent::MouseMove { dx, dy } = &captured.event {
-            self.cursor_x += dx;
-            self.cursor_y += dy;
-
-            // Clamp to screen bounds
-            let width = i32::try_from(self.screen.width).unwrap_or(i32::MAX);
-            let height = i32::try_from(self.screen.height).unwrap_or(i32::MAX);
-            self.cursor_x = self.cursor_x.clamp(0, width - 1);
-            self.cursor_y = self.cursor_y.clamp(0, height - 1);
-
-            // Check barrier crossings
+            self.move_cursor(*dx, *dy);
             if let Some((peer_id, edge, position)) = self.check_barrier_crossing() {
-                self.initiate_control(peer_id, edge, position).await;
+                self.initiate_control(peer_id, edge, position, false).await;
             }
         }
     }
 
+    /// Move the virtual cursor by a relative amount, saturating instead of
+    /// overflowing (deltas can come from the network), then clamp it to the
+    /// combined desktop.
+    fn move_cursor(&mut self, dx: i32, dy: i32) {
+        self.cursor_x = self.cursor_x.saturating_add(dx);
+        self.cursor_y = self.cursor_y.saturating_add(dy);
+        self.clamp_cursor();
+    }
+
+    /// The last pixel on each axis of the combined desktop.
+    fn screen_max(&self) -> (i32, i32) {
+        screen_max(&self.screen)
+    }
+
+    /// Clamp the virtual cursor to the desktop, which may not start at (0, 0).
+    fn clamp_cursor(&mut self) {
+        (self.cursor_x, self.cursor_y) = clamp_point(&self.screen, self.cursor_x, self.cursor_y);
+    }
+
+    /// The cursor's offset along `edge`, measured from the edge's start (its
+    /// top or left end).
+    fn edge_offset(&self, edge: ScreenEdge) -> u32 {
+        let off = match edge {
+            ScreenEdge::Left | ScreenEdge::Right => self.cursor_y.saturating_sub(self.screen.y),
+            ScreenEdge::Top | ScreenEdge::Bottom => self.cursor_x.saturating_sub(self.screen.x),
+        };
+        u32::try_from(off).unwrap_or(0)
+    }
+
+    /// Put the cursor on `edge`, at a position given along a peer's edge of
+    /// length `source_len`, scaled to our own resolution.
+    fn place_at_edge(&mut self, edge: ScreenEdge, position: u32, source_len: u32) {
+        let offset = scale_along_edge(position, source_len, edge_len(&self.screen, edge));
+        let offset = i32::try_from(offset).unwrap_or(0);
+        let (x1, y1) = self.screen_max();
+        let (x0, y0) = (self.screen.x, self.screen.y);
+        (self.cursor_x, self.cursor_y) = match edge {
+            ScreenEdge::Left => (x0, y0.saturating_add(offset)),
+            ScreenEdge::Right => (x1, y0.saturating_add(offset)),
+            ScreenEdge::Top => (x0.saturating_add(offset), y0),
+            ScreenEdge::Bottom => (x0.saturating_add(offset), y1),
+        };
+        self.clamp_cursor();
+    }
+
+    /// Put the cursor back in the middle of the desktop.
+    fn center_cursor(&mut self) {
+        self.cursor_x = self
+            .screen
+            .x
+            .saturating_add(i32::try_from(self.screen.width / 2).unwrap_or(0));
+        self.cursor_y = self
+            .screen
+            .y
+            .saturating_add(i32::try_from(self.screen.height / 2).unwrap_or(0));
+    }
+
+    /// Length of a peer's `edge`, from the layout it sent in the handshake.
+    fn peer_edge_len(&self, peer_id: MachineId, edge: ScreenEdge) -> u32 {
+        self.sessions
+            .get(&peer_id)
+            .map_or(0, |s| edge_len(&s.remote_layout.bounding_box(), edge))
+    }
+
+    /// Edges of `peer_name`'s screen that lead to another screen in our layout.
+    fn exit_edges_for(&self, peer_name: &str) -> Vec<ScreenEdge> {
+        ALL_EDGES
+            .into_iter()
+            .filter(|edge| self.adjacency.contains_key(&(peer_name.to_string(), *edge)))
+            .collect()
+    }
+
+    /// True when we are neither controlling, controlled, nor mid-hand-off.
+    fn is_idle(&self) -> bool {
+        self.controlling.is_none() && self.controlled_by.is_none() && self.pending_enter.is_none()
+    }
+
     fn check_barrier_crossing(&self) -> Option<(MachineId, ScreenEdge, u32)> {
         for (peer_id, session) in &self.sessions {
-            // Find which screen config matches this peer
             for screen_config in &self.config.screens {
                 if screen_config.name == session.name {
                     let edge = screen_config.position.local_edge();
                     if self.screen.is_at_edge(self.cursor_x, self.cursor_y, edge) {
-                        let position = match edge {
-                            ScreenEdge::Left | ScreenEdge::Right => {
-                                u32::try_from(self.cursor_y).unwrap_or(0)
-                            }
-                            ScreenEdge::Top | ScreenEdge::Bottom => {
-                                u32::try_from(self.cursor_x).unwrap_or(0)
-                            }
-                        };
-                        return Some((*peer_id, edge, position));
+                        return Some((*peer_id, edge, self.edge_offset(edge)));
                     }
                 }
             }
@@ -738,35 +925,128 @@ impl Daemon {
         None
     }
 
-    async fn initiate_control(&mut self, peer_id: MachineId, edge: ScreenEdge, position: u32) {
-        info!(peer = %peer_id, ?edge, position, "initiating control");
+    /// Start a hand-off to `peer_id` by sending `Enter`.
+    ///
+    /// Refused unless we are idle and out of the cool-down. Unless
+    /// `multi_hop` (continuing a crossing that is already under way), it also
+    /// waits until no key or button is held, so grabbing the devices cannot
+    /// leave a key stuck down locally.
+    async fn initiate_control(
+        &mut self,
+        peer_id: MachineId,
+        edge: ScreenEdge,
+        position: u32,
+        multi_hop: bool,
+    ) {
+        if !self.is_idle() {
+            return;
+        }
+        if self
+            .enter_cooldown_until
+            .is_some_and(|until| Instant::now() < until)
+        {
+            return;
+        }
+        if !multi_hop && !self.local_held.is_empty() {
+            debug!(
+                held = self.local_held.len(),
+                "not crossing while a key or button is held"
+            );
+            return;
+        }
+        let Some(peer_name) = self.sessions.get(&peer_id).map(|s| s.name.clone()) else {
+            return;
+        };
+        let exit_edges = self.exit_edges_for(&peer_name);
 
-        if let Some(session) = self.sessions.get_mut(&peer_id) {
-            match session.send_enter(edge, position).await {
-                Ok(()) => {
-                    // Don't set controlling yet — wait for EnterAck via event loop
-                    info!(peer = %peer_id, "Enter sent, awaiting EnterAck");
-                }
-                Err(e) => {
-                    warn!(error = %e, "failed to initiate control");
+        info!(peer = %peer_name, ?edge, position, "initiating control");
+        let Some(session) = self.sessions.get_mut(&peer_id) else {
+            return;
+        };
+        match session.send_enter(edge, position, exit_edges).await {
+            Ok(()) => {
+                self.pending_enter = Some((peer_id, Instant::now()));
+            }
+            Err(e) => {
+                warn!(peer = %peer_name, error = %e, "failed to send Enter");
+                self.enter_cooldown_until = Some(Instant::now() + ENTER_COOLDOWN);
+            }
+        }
+    }
+
+    /// Abandon a pending hand-off if its ack is overdue.
+    fn expire_pending_enter(&mut self) {
+        if let Some((peer_id, sent_at)) = self.pending_enter {
+            if sent_at.elapsed() >= ENTER_TIMEOUT {
+                warn!(peer = %peer_id, "no EnterAck within {ENTER_TIMEOUT:?}; abandoning hand-off");
+                self.cancel_pending_enter();
+            }
+        }
+    }
+
+    /// Forget the pending hand-off and start the cool-down. If the peer acks
+    /// it later anyway, that ack is answered with `Leave`.
+    fn cancel_pending_enter(&mut self) {
+        if let Some((peer_id, _)) = self.pending_enter.take() {
+            if let Some(session) = self.sessions.get_mut(&peer_id) {
+                session.cancel_enter();
+            }
+            self.enter_cooldown_until = Some(Instant::now() + ENTER_COOLDOWN);
+        }
+    }
+
+    /// Stop controlling `peer_id` without telling it (the link failed): reset
+    /// the session and give the local devices back.
+    async fn drop_control(&mut self, peer_id: MachineId) {
+        if self.controlling == Some(peer_id) {
+            self.controlling = None;
+            if let Some(session) = self.sessions.get_mut(&peer_id) {
+                session.reset_to_idle();
+            }
+            let _ = self.capture.release().await;
+            self.center_cursor();
+        }
+    }
+
+    /// Take control back from the remote (release hotkey), or abandon a
+    /// hand-off still awaiting its ack.
+    async fn release_control(&mut self) {
+        self.cancel_pending_enter();
+        if let Some(peer_id) = self.controlling.take() {
+            info!(peer = %peer_id, "releasing control");
+            if let Some(session) = self.sessions.get_mut(&peer_id) {
+                // The edge and position are not used for routing here: the
+                // remote just stops being controlled.
+                let _ = session.leave(ScreenEdge::Left, 0).await;
+            }
+            let _ = self.capture.release().await;
+            self.center_cursor();
+        }
+    }
+
+    /// Release every key and button we injected for the controlling peer.
+    async fn release_injected(&mut self) {
+        let held: Vec<_> = self.injected_held.drain().collect();
+        for (virtual_id, inputs) in held {
+            for input in inputs {
+                if let Err(e) = self
+                    .emulation
+                    .inject(virtual_id, input.release_event())
+                    .await
+                {
+                    debug!(error = %e, "failed to release injected input");
                 }
             }
         }
     }
 
-    async fn release_control(&mut self) {
-        if let Some(peer_id) = self.controlling.take() {
-            info!(peer = %peer_id, "releasing control");
-            if let Some(session) = self.sessions.get_mut(&peer_id) {
-                let edge = ScreenEdge::Left; // Default edge for release
-                let _ = session.leave(edge, 0).await;
-            }
-            let _ = self.capture.release().await;
-
-            // Reset cursor to center
-            self.cursor_x = i32::try_from(self.screen.width / 2).unwrap_or(960);
-            self.cursor_y = i32::try_from(self.screen.height / 2).unwrap_or(540);
-        }
+    /// Stop being controlled: release injected input and forget the
+    /// controller's exit edges.
+    async fn end_controlled(&mut self) {
+        self.release_injected().await;
+        self.controlled_by = None;
+        self.entry_edge = None;
+        self.exit_edges.clear();
     }
 
     fn update_hotkey_state(&mut self, event: &InputEvent) {
@@ -799,133 +1079,52 @@ impl Daemon {
     #[allow(clippy::too_many_lines)]
     async fn handle_peer_control(&mut self, machine_id: MachineId, msg: ControlMessage) {
         match msg {
-            ControlMessage::Enter { edge, position } => {
-                info!(peer = %machine_id, ?edge, position, "peer entering");
-                if let Some(session) = self.sessions.get_mut(&machine_id) {
-                    match session.handle_enter().await {
-                        Ok(()) => {
-                            self.controlled_by = Some(machine_id);
-                            // The edge in Enter is the exit edge on the controller's
-                            // screen. We need the opposite edge — where the cursor
-                            // enters our screen.
-                            let entry_edge = edge.opposite();
-                            self.entry_edge = Some(entry_edge);
-                            let pos = i32::try_from(position).unwrap_or(0);
-                            match entry_edge {
-                                ScreenEdge::Left => {
-                                    self.cursor_x = 0;
-                                    self.cursor_y = pos;
-                                }
-                                ScreenEdge::Right => {
-                                    let w = i32::try_from(self.screen.width).unwrap_or(1920);
-                                    self.cursor_x = w - 1;
-                                    self.cursor_y = pos;
-                                }
-                                ScreenEdge::Top => {
-                                    self.cursor_x = pos;
-                                    self.cursor_y = 0;
-                                }
-                                ScreenEdge::Bottom => {
-                                    let h = i32::try_from(self.screen.height).unwrap_or(1080);
-                                    self.cursor_x = pos;
-                                    self.cursor_y = h - 1;
-                                }
-                            }
-                            // Accept input stream asynchronously — the initiator
-                            // opened a uni stream but QUIC may not have delivered
-                            // the stream frame yet.
-                            self.spawn_accept_input_stream(machine_id);
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "failed to handle Enter");
-                        }
-                    }
-                }
+            ControlMessage::Enter {
+                edge,
+                position,
+                exit_edges,
+            } => {
+                self.handle_enter(machine_id, edge, position, exit_edges)
+                    .await;
             }
             ControlMessage::EnterAck => {
-                info!(peer = %machine_id, "received EnterAck");
-                if let Some(session) = self.sessions.get_mut(&machine_id) {
-                    session.set_controlling();
-                }
-                self.controlling = Some(machine_id);
-                // Offer our clipboard to the new controller — they'll Request
-                // the format they want. Skipped if no clipboard backend is
-                // installed or if the local clipboard is empty.
-                self.offer_clipboard(machine_id).await;
-            }
-            ControlMessage::Leave { edge, position } => {
-                if let Some(session) = self.sessions.get_mut(&machine_id) {
-                    session.handle_leave();
-                }
-                if self.controlled_by == Some(machine_id) {
-                    self.controlled_by = None;
-                    self.entry_edge = None;
-                }
-                // If we were controlling this peer, check adjacency map for
-                // multi-hop: maybe the cursor should go to another screen
-                // rather than returning to us.
-                if self.controlling == Some(machine_id) {
-                    info!(peer = %machine_id, ?edge, position, "peer sent Leave");
-                    self.controlling = None;
-                    let _ = self.capture.release().await;
-
-                    // Look up the leaving peer's name
-                    let peer_name = self.sessions.get(&machine_id).map(|s| s.name.clone());
-
-                    // Check adjacency map: where should the cursor go?
-                    let next_target = peer_name
-                        .as_ref()
-                        .and_then(|name| self.adjacency.get(&(name.clone(), edge)).cloned());
-
-                    // If the next target is us (local machine), fall through
-                    // to the default cursor-return behavior.
-                    let my_name = self.config.identity.name.clone();
-                    let next_target = next_target.filter(|t| *t != my_name);
-
-                    // Try to find the MachineId for the next target
-                    let next_peer = next_target.and_then(|target_name| {
-                        self.sessions
-                            .iter()
-                            .find(|(_, s)| s.name == target_name)
-                            .map(|(id, _)| *id)
-                    });
-
-                    if let Some(next_peer_id) = next_peer {
-                        // Multi-hop: transfer control to the next screen
-                        info!(
-                            next_peer = %next_peer_id,
-                            ?edge,
-                            position,
-                            "multi-hop: transferring control to next screen"
-                        );
-                        self.initiate_control(next_peer_id, edge, position).await;
-                    } else {
-                        // No multi-hop target — cursor returns to us.
-                        // Place cursor at the opposite edge.
-                        let return_edge = edge.opposite();
-                        let pos = i32::try_from(position).unwrap_or(0);
-                        let width = i32::try_from(self.screen.width).unwrap_or(1920);
-                        let height = i32::try_from(self.screen.height).unwrap_or(1080);
-                        match return_edge {
-                            ScreenEdge::Left => {
-                                self.cursor_x = 0;
-                                self.cursor_y = pos;
-                            }
-                            ScreenEdge::Right => {
-                                self.cursor_x = width - 1;
-                                self.cursor_y = pos;
-                            }
-                            ScreenEdge::Top => {
-                                self.cursor_x = pos;
-                                self.cursor_y = 0;
-                            }
-                            ScreenEdge::Bottom => {
-                                self.cursor_x = pos;
-                                self.cursor_y = height - 1;
-                            }
+                let pending = self.pending_enter.map(|(id, _)| id);
+                if pending == Some(machine_id) {
+                    self.pending_enter = None;
+                    let acked = self
+                        .sessions
+                        .get_mut(&machine_id)
+                        .is_some_and(PeerSession::set_controlling);
+                    if acked {
+                        info!(peer = %machine_id, "EnterAck: now controlling");
+                        self.controlling = Some(machine_id);
+                        // Stop local applications from seeing the input we
+                        // now forward. The release hotkey still works:
+                        // capture keeps delivering events to us.
+                        if let Err(e) = self.capture.grab().await {
+                            warn!(error = %e, "failed to grab input devices");
                         }
+                        self.offer_clipboard(machine_id).await;
+                        return;
                     }
                 }
+                // An ack we did not ask for (or one that arrived after we gave
+                // up): tell the peer to stand down so it is not left
+                // believing we control it.
+                warn!(peer = %machine_id, "unsolicited EnterAck; asking peer to stand down");
+                if let Some(session) = self.sessions.get_mut(&machine_id) {
+                    let _ = session.leave(ScreenEdge::Left, 0).await;
+                    session.reset_to_idle();
+                }
+            }
+            ControlMessage::EnterReject => {
+                if self.pending_enter.map(|(id, _)| id) == Some(machine_id) {
+                    info!(peer = %machine_id, "peer refused hand-off");
+                    self.cancel_pending_enter();
+                }
+            }
+            ControlMessage::Leave { edge, position } => {
+                self.handle_leave(machine_id, edge, position).await;
             }
             ControlMessage::DeviceAnnounce(info) => {
                 debug!(peer = %machine_id, device = %info.name, "device announced");
@@ -1067,80 +1266,172 @@ impl Daemon {
         }
     }
 
-    async fn handle_peer_input(&mut self, machine_id: MachineId, msg: InputMessage) {
-        if self.controlled_by != Some(machine_id) {
-            warn!(peer = %machine_id, controlled_by = ?self.controlled_by, "received input from non-controlling peer");
-            return;
-        }
+    /// A peer wants to hand control to us.
+    ///
+    /// Accepted only when we are idle. If we are mid-hand-off *to that same
+    /// peer* (both pushed at once), the lower `MachineId` keeps its hand-off
+    /// and the other side yields, so exactly one direction wins. Anything else
+    /// is answered with `EnterReject` so the sender does not wait for an ack
+    /// that will never come.
+    async fn handle_enter(
+        &mut self,
+        machine_id: MachineId,
+        edge: ScreenEdge,
+        position: u32,
+        exit_edges: Vec<ScreenEdge>,
+    ) {
+        info!(peer = %machine_id, ?edge, position, "peer entering");
 
-        // Track cursor position from remote input for barrier detection
-        for event in &msg.events {
-            if let InputEvent::MouseMove { dx, dy } = event {
-                self.cursor_x += dx;
-                self.cursor_y += dy;
-                let width = i32::try_from(self.screen.width).unwrap_or(i32::MAX);
-                let height = i32::try_from(self.screen.height).unwrap_or(i32::MAX);
-                self.cursor_x = self.cursor_x.clamp(0, width - 1);
-                self.cursor_y = self.cursor_y.clamp(0, height - 1);
+        if self.pending_enter.map(|(id, _)| id) == Some(machine_id) {
+            if self.machine_id.as_uuid() < machine_id.as_uuid() {
+                debug!(peer = %machine_id, "simultaneous hand-off: keeping ours");
+                self.reject_enter(machine_id).await;
+                return;
+            }
+            debug!(peer = %machine_id, "simultaneous hand-off: yielding");
+            self.pending_enter = None;
+            if let Some(session) = self.sessions.get_mut(&machine_id) {
+                session.cancel_enter();
             }
         }
 
-        // Clear the entry_edge suppression once the cursor moves away from
-        // the entry edge. This prevents immediate bounce-back when the cursor
-        // starts AT the entry edge, while still allowing Leave if the user
-        // deliberately moves back to it later.
+        if !self.is_idle() {
+            debug!(peer = %machine_id, "busy; refusing hand-off");
+            self.reject_enter(machine_id).await;
+            return;
+        }
+
+        let source_len = self.peer_edge_len(machine_id, edge);
+        let Some(session) = self.sessions.get_mut(&machine_id) else {
+            return;
+        };
+        if let Err(e) = session.handle_enter().await {
+            warn!(peer = %machine_id, error = %e, "cannot accept hand-off");
+            self.reject_enter(machine_id).await;
+            return;
+        }
+
+        self.controlled_by = Some(machine_id);
+        self.exit_edges = exit_edges;
+        // `edge` is the controller's exit edge; the cursor enters on our
+        // opposite edge. Suppress Leave on that edge until the cursor moves
+        // off it, or it would bounce straight back.
+        let entry_edge = edge.opposite();
+        self.entry_edge = Some(entry_edge);
+        self.place_at_edge(entry_edge, position, source_len);
+        // The initiator opened a uni stream before sending Enter, but QUIC may
+        // not have delivered the stream frame yet: accept it asynchronously.
+        self.spawn_accept_input_stream(machine_id);
+    }
+
+    async fn reject_enter(&mut self, machine_id: MachineId) {
+        if let Some(session) = self.sessions.get_mut(&machine_id) {
+            if let Err(e) = session.control_tx.send(&ControlMessage::EnterReject).await {
+                debug!(peer = %machine_id, error = %e, "failed to send EnterReject");
+            }
+        }
+    }
+
+    /// A peer reports that the cursor left its screen (or that it stopped
+    /// being controlled by us, after our release hotkey).
+    async fn handle_leave(&mut self, machine_id: MachineId, edge: ScreenEdge, position: u32) {
+        if let Some(session) = self.sessions.get_mut(&machine_id) {
+            session.handle_leave();
+        }
+        if self.pending_enter.map(|(id, _)| id) == Some(machine_id) {
+            self.pending_enter = None;
+        }
+        if self.controlled_by == Some(machine_id) {
+            self.end_controlled().await;
+        }
+        if self.controlling != Some(machine_id) {
+            return;
+        }
+
+        info!(peer = %machine_id, ?edge, position, "peer sent Leave");
+        self.controlling = None;
+        let _ = self.capture.release().await;
+
+        let source_len = self.peer_edge_len(machine_id, edge);
+        // Where does the cursor go next? The adjacency map knows what lies
+        // beyond each edge of the peer's screen.
+        let my_name = self.config.identity.name.clone();
+        let next_peer = self
+            .sessions
+            .get(&machine_id)
+            .and_then(|s| self.adjacency.get(&(s.name.clone(), edge)))
+            .filter(|target| **target != my_name)
+            .and_then(|target| {
+                self.sessions
+                    .iter()
+                    .find(|(_, s)| s.name == *target)
+                    .map(|(id, _)| *id)
+            });
+
+        if let Some(next_peer_id) = next_peer {
+            // Multi-hop: carry the position through in our own coordinates.
+            let position = scale_along_edge(position, source_len, edge_len(&self.screen, edge));
+            info!(next_peer = %next_peer_id, ?edge, position, "multi-hop: transferring control");
+            self.initiate_control(next_peer_id, edge, position, true)
+                .await;
+            if self.pending_enter.is_none() {
+                // The hop could not start: bring the cursor home instead.
+                self.place_at_edge(edge.opposite(), position, edge_len(&self.screen, edge));
+            }
+        } else {
+            // The cursor comes back to us on the edge facing the peer.
+            self.place_at_edge(edge.opposite(), position, source_len);
+        }
+    }
+
+    async fn handle_peer_input(&mut self, machine_id: MachineId, msg: InputMessage) {
+        if self.controlled_by != Some(machine_id) {
+            debug!(peer = %machine_id, controlled_by = ?self.controlled_by, "ignoring input from non-controlling peer");
+            return;
+        }
+
+        for event in &msg.events {
+            if let InputEvent::MouseMove { dx, dy } = event {
+                self.move_cursor(*dx, *dy);
+            }
+        }
+
+        // Clear the entry-edge suppression once the cursor moves off it, so a
+        // deliberate return to that edge still sends Leave later.
         if let Some(entry) = self.entry_edge {
             if !self.screen.is_at_edge(self.cursor_x, self.cursor_y, entry) {
                 self.entry_edge = None;
             }
         }
 
-        // Check if cursor has hit ANY screen edge — if so, send Leave to
-        // the controller. The Leave message includes the exit edge so the
-        // controller can decide where to route the cursor (multi-hop via
-        // adjacency map, or return to itself).
-        if let Some(controller_id) = self.controlled_by {
-            for screen_config in &self.config.screens {
-                let edge = screen_config.position.local_edge();
-                // Skip the entry edge while cursor is still on it (suppression).
-                if self.entry_edge == Some(edge) {
-                    continue;
-                }
-                if self.screen.is_at_edge(self.cursor_x, self.cursor_y, edge) {
-                    let position = match edge {
-                        ScreenEdge::Left | ScreenEdge::Right => {
-                            u32::try_from(self.cursor_y).unwrap_or(0)
-                        }
-                        ScreenEdge::Top | ScreenEdge::Bottom => {
-                            u32::try_from(self.cursor_x).unwrap_or(0)
-                        }
-                    };
-                    info!(
-                        peer = %controller_id,
-                        ?edge,
-                        neighbor = %screen_config.name,
-                        position,
-                        "cursor hit edge, sending Leave"
-                    );
-                    if let Some(session) = self.sessions.get_mut(&controller_id) {
-                        let _ = session.leave(edge, position).await;
-                    }
-                    self.controlled_by = None;
-                    self.entry_edge = None;
-                    return;
-                }
+        // Reaching an edge the controller says leads somewhere hands the
+        // cursor back; it decides where it goes (multi-hop or home).
+        let exit = self.exit_edges.iter().copied().find(|edge| {
+            self.entry_edge != Some(*edge)
+                && self.screen.is_at_edge(self.cursor_x, self.cursor_y, *edge)
+        });
+        if let Some(edge) = exit {
+            let position = self.edge_offset(edge);
+            info!(peer = %machine_id, ?edge, position, "cursor hit edge, sending Leave");
+            self.end_controlled().await;
+            if let Some(session) = self.sessions.get_mut(&machine_id) {
+                let _ = session.leave(edge, position).await;
             }
+            return;
         }
 
-        if let Some(session) = self.sessions.get(&machine_id) {
-            if let Some(&virtual_id) = session.device_map.get(&msg.device_id) {
-                for event in &msg.events {
-                    if let Err(e) = self.emulation.inject(virtual_id, event.clone()).await {
-                        warn!(error = %e, "failed to inject event");
-                    }
-                }
-            } else {
-                debug!(peer = %machine_id, device_id = ?msg.device_id, "no virtual device for input device");
+        let Some(&virtual_id) = self
+            .sessions
+            .get(&machine_id)
+            .and_then(|s| s.device_map.get(&msg.device_id))
+        else {
+            debug!(peer = %machine_id, device_id = ?msg.device_id, "no virtual device for input device");
+            return;
+        };
+        for event in msg.events {
+            track_held(self.injected_held.entry(virtual_id).or_default(), &event);
+            if let Err(e) = self.emulation.inject(virtual_id, event).await {
+                warn!(error = %e, "failed to inject event");
             }
         }
     }
@@ -1149,18 +1440,21 @@ impl Daemon {
         if self.controlling == Some(machine_id) {
             self.controlling = None;
             let _ = self.capture.release().await;
+            self.center_cursor();
+        }
+        if self.pending_enter.map(|(id, _)| id) == Some(machine_id) {
+            self.pending_enter = None;
         }
         if self.controlled_by == Some(machine_id) {
-            self.controlled_by = None;
-            self.entry_edge = None;
+            self.end_controlled().await;
         }
 
         if let Some(mut session) = self.sessions.remove(&machine_id) {
             // Release the dial slot so this peer can be re-dialed when
             // discovery surfaces it again.
             release_dial(&self.dialed_addrs, session.connection.remote_address());
-            // Clean up virtual devices
             for (_, virtual_id) in session.device_map.drain() {
+                self.injected_held.remove(&virtual_id);
                 let _ = self.emulation.destroy_device(virtual_id).await;
             }
             info!(peer = %session.name, "peer session removed");
@@ -1337,4 +1631,60 @@ async fn perform_handshake_initiator(
         .await?;
     session.announce_devices(local_devices).await?;
     Ok(session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_maps_between_resolutions() {
+        // Halfway down a 1080-high edge is halfway down a 1440-high edge.
+        assert_eq!(scale_along_edge(540, 1080, 1440), 720);
+        // Clamped to the target edge.
+        assert_eq!(scale_along_edge(5000, 1080, 1080), 1079);
+        // Unknown source length: keep the position, still clamped.
+        assert_eq!(scale_along_edge(100, 0, 1080), 100);
+        assert_eq!(scale_along_edge(5000, 0, 1080), 1079);
+    }
+
+    #[test]
+    fn clamp_respects_negative_origin() {
+        // A monitor to the left of the primary: the desktop spans x = -1920..1919.
+        let screen = ScreenGeometry {
+            width: 3840,
+            height: 1080,
+            x: -1920,
+            y: 0,
+        };
+        assert_eq!(clamp_point(&screen, -5000, 500), (-1920, 500));
+        assert_eq!(clamp_point(&screen, 5000, 500), (1919, 500));
+        // The left edge is reachable and detected as the left edge.
+        let (x, y) = clamp_point(&screen, -5000, 500);
+        assert!(screen.is_at_edge(x, y, ScreenEdge::Left));
+        // Mid-desktop is not the right edge (the old [0, width) clamp put the
+        // "right edge" at x = 3839, unreachable, and the left at 0, mid-desktop).
+        assert!(!screen.is_at_edge(0, 500, ScreenEdge::Left));
+    }
+
+    #[test]
+    fn held_input_tracking_and_release() {
+        let mut held = HashSet::new();
+        let down = InputEvent::Key {
+            code: KeyCode::KeyA,
+            state: ButtonState::Pressed,
+        };
+        let up = InputEvent::Key {
+            code: KeyCode::KeyA,
+            state: ButtonState::Released,
+        };
+        track_held(&mut held, &down);
+        assert!(held.contains(&HeldInput::Key(KeyCode::KeyA)));
+        assert_eq!(HeldInput::Key(KeyCode::KeyA).release_event(), up);
+        track_held(&mut held, &up);
+        assert_eq!(held, HashSet::new());
+        // Mouse moves are not held inputs.
+        track_held(&mut held, &InputEvent::MouseMove { dx: 1, dy: 1 });
+        assert_eq!(held, HashSet::new());
+    }
 }
