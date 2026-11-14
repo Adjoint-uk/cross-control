@@ -72,4 +72,10 @@ async fn pair_prints_peer_name_and_fingerprint() {
         stdout.contains("[[screens]]"),
         "pair output should include a config snippet; got:\n{stdout}"
     );
+    // The responder listens on an ephemeral (non-default) port; the snippet
+    // must keep it or the daemon would dial the wrong port.
+    assert!(
+        stdout.contains(&format!("address = \"{addr}\"")),
+        "pair output should keep the peer's port; got:\n{stdout}"
+    );
 }

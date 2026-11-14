@@ -148,7 +148,7 @@ async fn pair_with(address: &str) -> anyhow::Result<()> {
     println!();
     println!("  [[screens]]");
     println!("  name = \"{peer_name}\"");
-    println!("  address = \"{}\"", addr.ip());
+    println!("  address = \"{addr}\"");
     println!("  position = \"Right\"   # Left / Right / Above / Below");
     println!("  fingerprint = \"{fingerprint}\"");
 
