@@ -7,7 +7,7 @@ use quinn::{Connection, RecvStream, SendStream};
 use tracing::trace;
 
 use crate::error::ProtocolError;
-use crate::wire::MAX_MESSAGE_SIZE;
+use crate::wire::{decode_message, encode_payload, MAX_MESSAGE_SIZE};
 
 /// A connection to a remote cross-control peer.
 #[derive(Clone)]
@@ -98,9 +98,7 @@ impl MessageSender {
 
     /// Send a message, encoding it as length-prefixed bincode.
     pub async fn send<T: Encode>(&mut self, msg: &T) -> Result<(), ProtocolError> {
-        let config = bincode::config::standard();
-        let payload = bincode::encode_to_vec(msg, config)
-            .map_err(|e| ProtocolError::Serialization(e.to_string()))?;
+        let payload = encode_payload(msg)?;
 
         let len = u32::try_from(payload.len())
             .map_err(|_| ProtocolError::Serialization("message too large".to_string()))?;
@@ -174,9 +172,7 @@ impl MessageReceiver {
             }
         }
 
-        let config = bincode::config::standard();
-        let (msg, _) = bincode::decode_from_slice(&payload, config)
-            .map_err(|e| ProtocolError::Deserialization(e.to_string()))?;
+        let msg = decode_message(&payload)?;
 
         trace!(len, "received message");
         Ok(Some(msg))
