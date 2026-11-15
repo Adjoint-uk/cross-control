@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod daemon;
+pub mod doctor;
 pub mod identity;
 pub mod pair;
 pub mod service;

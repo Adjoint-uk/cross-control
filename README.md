@@ -88,6 +88,9 @@ Set up two Linux machines on the same network:
 cargo install --path crates/cross-control-cli
 ```
 
+Then run `cross-control doctor`: it checks input-device permissions, uinput,
+config, trust and the network port, and prints the fix for anything missing.
+
 ### 2. Pair the machines
 
 Every connection is mutually authenticated: each machine has a self-signed

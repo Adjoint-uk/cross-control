@@ -8,7 +8,7 @@ use cross_control_types::{
 };
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, EventType, KeyCode as EvdevKey, RelativeAxisCode};
-use tracing::{debug, info};
+use tracing::{info, trace};
 
 use super::keymap;
 use crate::error::InputError;
@@ -116,7 +116,9 @@ impl InputEmulation for UinputEmulation {
             vdev.emit(&evdev_events)
                 .map_err(|e| InputError::Inject(e.to_string()))?;
         }
-        debug!(?event, device = device.0, "injected event");
+        // Trace, not debug: events are keystrokes (possibly passwords) and
+        // must not end up in logs collected for troubleshooting.
+        trace!(?event, device = device.0, "injected event");
         Ok(())
     }
 

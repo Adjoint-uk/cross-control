@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — bring-up tooling
+
+- **`cross-control doctor`** checks whether a machine is ready to run cross-control, and prints the exact fix for each problem. With `--json` it gives machine-readable results, and it exits 1 if any check fails. It checks:
+  - readable input devices, and the keyboards and mice detected;
+  - write access to `/dev/uinput`;
+  - the configuration file and this machine's identity;
+  - neighbours in the layout that aren't trusted;
+  - whether the UDP port is free;
+  - clipboard access and the session type.
+- **`docs/hardware-test.md`** is a step-by-step checklist for the first test on two physical machines, and lists what to send back when something fails.
+
+### Security
+
+- The Linux emulation backend no longer logs injected events at `debug`, because they are keystrokes and could include passwords. They are now logged only at `trace`.
+
 ### Added — Ansible role and headless mode
 
 - **Ansible role** (`deploy/ansible/roles/cross_control`):

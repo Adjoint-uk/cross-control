@@ -74,6 +74,13 @@ Validates a configuration file without starting anything. Exit code 4 if it
 is invalid or missing; suitable for Ansible's `template: validate:`
 (`cross-control config check %s`).
 
+### `doctor`
+
+Checks that the machine is ready (input devices and permissions, uinput,
+config, identity, trust versus layout, UDP port, clipboard) and prints a fix
+for each problem. `--json` gives `{"ok": bool, "checks": [...]}`; exit code
+1 if any check failed (warnings pass). Useful as a post-deployment assertion.
+
 ### `status`
 
 Exit code 0 when the daemon is running, 3 when it is not (the LSB
