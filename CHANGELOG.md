@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — dependency advisories
+
+- **Updated dependencies with published RustSec advisories** (lockfile only, semver-compatible). These include remotely triggerable panics, memory exhaustion and a stream-limit bypass in `quinn-proto` (0.11.13 → 0.11.19) and `quinn-udp`; handshake-message, certificate-decompression and secret-leaking `Debug` issues in `rustls` (0.23.36 → 0.23.46); certificate-validation fixes in `rustls-webpki`; and soundness fixes in `tokio` and `anyhow`. Yanked `spin` and `clipboard-win` versions were replaced too.
+- **Dropped the unmaintained `rustls-pemfile`.** Certificates and keys are now parsed with `rustls-pki-types`' built-in PEM support.
+- `bincode` is unmaintained with no maintained successor. It is recorded as an explicit, reasoned exception: decoding is bounded and fuzzed, and a codec change (which changes the wire format) is tracked separately.
+
+### Added — project hygiene
+
+- **CI:**
+  - `cargo-deny` (advisories, licenses, bans, sources) on every pull request. `deny.toml` is migrated to the v2 format; the old file was rejected by current cargo-deny, so it never actually ran.
+  - Clippy over all targets and features.
+  - Rustdoc with warnings denied.
+  - A Rust 1.89 build check.
+- **MSRV is now stated accurately as 1.89.** The previous `1.75` was below what the dependencies already required.
+- **Fuzzing:** cargo-fuzz targets for the wire decoder (`fuzz/`), run weekly in CI. A deterministic random/mutation test of the decoder (100k inputs) runs in every build.
+- Internal path dependencies carry versions, so the crates are publishable.
+- The landing page and README now describe the trust model accurately (mutual authentication; discovery is never trusted).
+
 ### Fixed — robustness
 
 - **A stalled peer can no longer freeze the daemon.** Control and input messages are queued to per-stream writer tasks (`QueuedSender`) instead of being written from the event loop. A full queue reports backpressure: input stops being forwarded (control returns to the local machine), and a peer whose control queue stays full for a ping interval is disconnected.

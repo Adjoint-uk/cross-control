@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
@@ -100,8 +101,7 @@ fn quic_client_config(
 }
 
 fn parse_certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, ProtocolError> {
-    let mut reader = std::io::BufReader::new(pem.as_bytes());
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+    let certs = CertificateDer::pem_slice_iter(pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ProtocolError::Tls(format!("failed to parse certificate PEM: {e}")))?;
     if certs.is_empty() {
@@ -113,10 +113,8 @@ fn parse_certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, ProtocolError>
 }
 
 fn parse_key(pem: &str) -> Result<PrivateKeyDer<'static>, ProtocolError> {
-    let mut reader = std::io::BufReader::new(pem.as_bytes());
-    rustls_pemfile::private_key(&mut reader)
-        .map_err(|e| ProtocolError::Tls(format!("failed to parse key PEM: {e}")))?
-        .ok_or_else(|| ProtocolError::Tls("no private key found in PEM".to_string()))
+    PrivateKeyDer::from_pem_slice(pem.as_bytes())
+        .map_err(|e| ProtocolError::Tls(format!("failed to parse key PEM: {e}")))
 }
 
 /// SHA-256 fingerprint of a DER certificate as lowercase hex, no separators

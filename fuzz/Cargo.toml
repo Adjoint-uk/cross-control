@@ -1,0 +1,31 @@
+[package]
+name = "cross-control-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cross-control-protocol = { path = "../crates/cross-control-protocol" }
+cross-control-types = { path = "../crates/cross-control-types" }
+
+# Kept out of the main workspace: fuzzing needs nightly and cargo-fuzz.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "decode_message"
+path = "fuzz_targets/decode_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_control"
+path = "fuzz_targets/decode_control.rs"
+test = false
+doc = false
+bench = false

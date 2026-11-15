@@ -1,24 +1,43 @@
+# cargo-deny configuration (v2 format). Run with `cargo deny check`; CI runs
+# it on every pull request.
+
+[graph]
+all-features = true
+
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
+# Every RustSec vulnerability fails the check. Unmaintained crates fail when
+# they are direct or transitive dependencies of the workspace; yanked
+# versions always fail. Exceptions go in `ignore`, each with a reason.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = [
+  # bincode's maintainers have stopped development; there is no maintained
+  # 2.x successor. Decoding is bounded (wire.rs: decode limit + frame cap)
+  # and fuzzed (fuzz/). Moving to another codec changes the wire format and
+  # is tracked separately.
+  { id = "RUSTSEC-2025-0141", reason = "no maintained successor; decoding is bounded and fuzzed" },
+]
 
 [licenses]
-unlicensed = "deny"
 allow = [
   "MIT",
   "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
+  "BSL-1.0",
   "ISC",
+  "MPL-2.0",
+  "Zlib",
   "Unicode-3.0",
-  "Unicode-DFS-2016",
-  "OpenSSL",
+  "CDLA-Permissive-2.0",
 ]
+confidence-threshold = 0.9
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

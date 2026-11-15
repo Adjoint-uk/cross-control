@@ -315,7 +315,8 @@ impl PeerSession {
     /// Handle an incoming Enter from the remote peer: send `EnterAck`.
     ///
     /// Sends `EnterAck` immediately. The input stream must be accepted
-    /// separately via [`accept_input_stream`] (typically spawned as a task).
+    /// separately via [`PeerConnection::accept_input_stream`] (typically spawned
+    /// as a task).
     pub fn handle_enter(&mut self) -> Result<(), DaemonError> {
         if !self.state.can_enter_controlled() {
             return Err(DaemonError::Protocol(

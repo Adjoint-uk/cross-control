@@ -15,7 +15,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0-alpha.1"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Adjoint-uk/cross-control"
 homepage = "https://cross-control.adjoint.uk"
@@ -23,13 +23,13 @@ authors = ["Adjoint Ltd <hello@adjoint.uk>"]
 
 [workspace.dependencies]
 # Shared types
-cross-control-types = { path = "crates/cross-control-types" }
-cross-control-protocol = { path = "crates/cross-control-protocol" }
-cross-control-input = { path = "crates/cross-control-input" }
-cross-control-clipboard = { path = "crates/cross-control-clipboard" }
-cross-control-discovery = { path = "crates/cross-control-discovery" }
-cross-control-daemon = { path = "crates/cross-control-daemon" }
-cross-control-certgen = { path = "crates/cross-control-certgen" }
+cross-control-types = { version = "0.1.0-alpha.1", path = "crates/cross-control-types" }
+cross-control-protocol = { version = "0.1.0-alpha.1", path = "crates/cross-control-protocol" }
+cross-control-input = { version = "0.1.0-alpha.1", path = "crates/cross-control-input" }
+cross-control-clipboard = { version = "0.1.0-alpha.1", path = "crates/cross-control-clipboard" }
+cross-control-discovery = { version = "0.1.0-alpha.1", path = "crates/cross-control-discovery" }
+cross-control-daemon = { version = "0.1.0-alpha.1", path = "crates/cross-control-daemon" }
+cross-control-certgen = { version = "0.1.0-alpha.1", path = "crates/cross-control-certgen" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -85,7 +85,6 @@ ring = "0.17"
 base64 = "0.22"
 
 # PEM parsing
-rustls-pemfile = "2"
 
 # Filesystem paths
 dirs = "5"

@@ -367,7 +367,7 @@ peer machine-b  3 ms
             <div class="label"><span class="tag">● machine&#8209;b</span><span>2560×1440</span></div>
             <div class="active-chip">controlling</div>
             <div class="screen"><span class="glyphs">$ cross-control start
-paired · tls 1.3 · tofu ✓
+paired · mutual tls 1.3 · pinned ✓
 awaiting cursor…
 ▏</span></div>
           </div>
@@ -427,8 +427,8 @@ awaiting cursor…
       <div class="feat-grid">
         <div class="feat"><span class="ic"><span class="sq"></span>TRANSPORT</span><h3>QUIC, not TCP</h3><p>Multiplexed streams, built-in TLS 1.3, and 0-RTT reconnection after a network blip. Control, input, and clipboard ride their own lanes.</p></div>
         <div class="feat"><span class="ic"><span class="sq"></span>WAYLAND</span><h3>Native from day one</h3><p>Input via evdev/uinput, so it works on Wayland where Barrier and Input Leap fall over — with enhanced support for wlroots compositors.</p></div>
-        <div class="feat"><span class="ic"><span class="sq"></span>DISCOVERY</span><h3>Zero-config mDNS</h3><p>Machines find each other on the LAN automatically. No static IP in a config file — the advert even carries the cert fingerprint to pin.</p></div>
-        <div class="feat"><span class="ic"><span class="sq"></span>SECURITY</span><h3>Trust on first use</h3><p>SSH-style certificate pinning. No central authority, no account, no cloud. Keys stay on your machines; traffic is always encrypted.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>DISCOVERY</span><h3>Zero-config mDNS</h3><p>Machines find each other on the LAN automatically — no static IP in a config file. Discovery only finds peers; it never decides who is trusted.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>SECURITY</span><h3>Mutual authentication</h3><p>Both machines prove who they are with pinned certificates — SSH-style pairing, one command. No central authority, no account, no cloud. Keys stay on your machines; traffic is always encrypted.</p></div>
         <div class="feat"><span class="ic"><span class="sq"></span>CLIPBOARD</span><h3>Text, HTML &amp; images</h3><p>Your clipboard follows control across the seam — plain text, rich HTML, and PNG images, synced on hand-off with a configurable size cap.</p></div>
         <div class="feat"><span class="ic"><span class="sq"></span>TOPOLOGY</span><h3>Many machines, many monitors</h3><p>Star topology across any number of boxes, multi-monitor per machine, and edge-based switching just like macOS Universal Control.</p></div>
       </div>
@@ -505,7 +505,7 @@ Peers:   1 connected
         <p>The core KVM works end-to-end on Linux today. It's alpha — not yet a daily driver, but moving fast in the open.</p>
       </div>
       <div class="road">
-        <div class="phase"><span class="st done">Shipped</span><span class="pk">Phase 1 · v0.2.0</span><h3>It works</h3><p>QUIC transport, evdev/uinput capture, multi-hop switching, mDNS discovery, TOFU pinning.</p></div>
+        <div class="phase"><span class="st done">Shipped</span><span class="pk">Phase 1 · v0.2.0</span><h3>It works</h3><p>QUIC transport, evdev/uinput capture, multi-hop switching, mDNS discovery, certificate pinning.</p></div>
         <div class="phase active"><span class="st now">In progress</span><span class="pk">Phase 2 · v0.5.0</span><h3>It's pleasant</h3><p>Clipboard formats, multi-monitor, live status, TOML layouts, systemd service.</p></div>
         <div class="phase"><span class="st next">Planned</span><span class="pk">Phase 3 · v0.9.0</span><h3>It's portable</h3><p>Windows &amp; macOS input backends, distro packaging, signed release binaries.</p></div>
         <div class="phase"><span class="st next">Planned</span><span class="pk">Phase 4 · v1.0</span><h3>It's stable</h3><p>Frozen wire protocol, documented security model, fuzzing, a SemVer commitment.</p></div>
@@ -547,7 +547,7 @@ Peers:   1 connected
         <a href="https://github.com/Adjoint-uk/cross-control/blob/main/DESIGN.md" target="_blank" rel="noopener">Design</a>
       </div>
     </div>
-    <p class="lic">Built in Rust · dual-licensed MIT / Apache-2.0 · trust-on-first-use, no cloud, no account.</p>
+    <p class="lic">Built in Rust · dual-licensed MIT / Apache-2.0 · mutual TLS, no cloud, no account.</p>
   </div>
 </footer>
 
