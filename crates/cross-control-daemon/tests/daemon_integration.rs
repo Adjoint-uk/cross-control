@@ -2,14 +2,16 @@
 
 #![allow(clippy::similar_names, clippy::doc_markdown, clippy::too_many_lines)]
 
+use std::fmt::Write as _;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use cross_control_clipboard::{ClipboardProvider, MockClipboard};
 use cross_control_daemon::config::{
-    Config, DaemonConfig, IdentityConfig, ScreenAdjacency, ScreenConfig,
+    Config, DaemonConfig, IdentityConfig, ScreenAdjacency, ScreenConfig, SecurityConfig,
 };
 use cross_control_daemon::{Daemon, DaemonEvent, DaemonStatus};
 use cross_control_input::mock::{MockCapture, MockEmulation, MockEmulationHandle};
@@ -38,9 +40,48 @@ struct TestPair {
     status_b: watch::Receiver<DaemonStatus>,
     shutdown_b: mpsc::Sender<DaemonEvent>,
 
+    /// B's `known_peers` file.
+    known_peers_b: PathBuf,
+
     // Join handles
     handle_a: tokio::task::JoinHandle<()>,
     handle_b: tokio::task::JoinHandle<()>,
+}
+
+/// How daemon B decides whether to trust daemon A.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BTrust {
+    /// B pins A's real fingerprint in its config.
+    PinsA,
+    /// B knows nothing about A and does not trust on first use.
+    Untrusted,
+    /// B knows nothing about A but trusts on first use.
+    Tofu,
+    /// B pins a *different* certificate under A's name.
+    PinsSomeoneElse,
+}
+
+#[derive(Clone, Copy)]
+struct PairOpts {
+    b_trust: BTrust,
+    /// B also dials A (both sides have the other's address).
+    b_dials_a: bool,
+}
+
+impl Default for PairOpts {
+    fn default() -> Self {
+        Self {
+            b_trust: BTrust::PinsA,
+            b_dials_a: false,
+        }
+    }
+}
+
+/// A fresh, not-yet-existing `known_peers` path in the temp directory.
+fn scratch_known_peers() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("cc-daemon-test-{}", MachineId::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("known_peers")
 }
 
 impl TestPair {
@@ -72,8 +113,13 @@ fn test_devices() -> Vec<DeviceInfo> {
 /// Daemon A has a screen "machine-b" at `Position::Right` pointing at B.
 /// Daemon B has a screen "machine-a" at `Position::Left` pointing at A.
 ///
-/// A initiates the outbound connection to B.
+/// A initiates the outbound connection to B. Each side pins the other's
+/// certificate in its config.
 async fn setup_pair() -> TestPair {
+    setup_pair_opts(PairOpts::default()).await
+}
+
+async fn setup_pair_opts(opts: PairOpts) -> TestPair {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let cert_a = cross_control_certgen::generate_certificate("localhost").unwrap();
@@ -87,7 +133,9 @@ async fn setup_pair() -> TestPair {
         cross_control_protocol::QuicTransport::bind(bind, &cert_b.cert_pem, &cert_b.key_pem)
             .unwrap();
 
+    let addr_a = transport_a.local_addr().unwrap();
     let addr_b = transport_b.local_addr().unwrap();
+    let known_peers_b = scratch_known_peers();
 
     let machine_id_a = MachineId::new();
     let machine_id_b = MachineId::new();
@@ -106,9 +154,23 @@ async fn setup_pair() -> TestPair {
             name: "machine-b".to_string(),
             address: Some(addr_b.to_string()),
             position: Position::Right,
-            fingerprint: None,
+            fingerprint: Some(cert_b.fingerprint.clone()),
         }],
+        security: SecurityConfig {
+            trust_on_first_use: false,
+            known_peers: Some(scratch_known_peers()),
+        },
         ..Config::default()
+    };
+
+    let b_pin = match opts.b_trust {
+        BTrust::PinsA => Some(cert_a.fingerprint.clone()),
+        BTrust::PinsSomeoneElse => Some(
+            cross_control_certgen::generate_certificate("localhost")
+                .unwrap()
+                .fingerprint,
+        ),
+        BTrust::Untrusted | BTrust::Tofu => None,
     };
 
     // Config for daemon B: knows about A at Position::Left (no address — A connects to B)
@@ -123,10 +185,14 @@ async fn setup_pair() -> TestPair {
         },
         screens: vec![ScreenConfig {
             name: "machine-a".to_string(),
-            address: None,
+            address: opts.b_dials_a.then(|| addr_a.to_string()),
             position: Position::Left,
-            fingerprint: None,
+            fingerprint: b_pin,
         }],
+        security: SecurityConfig {
+            trust_on_first_use: opts.b_trust == BTrust::Tofu,
+            known_peers: Some(known_peers_b.clone()),
+        },
         ..Config::default()
     };
 
@@ -197,6 +263,7 @@ async fn setup_pair() -> TestPair {
         clipboard_b,
         status_b,
         shutdown_b,
+        known_peers_b,
         handle_a,
         handle_b,
     }
@@ -594,8 +661,10 @@ where
     // Bind all transports first so we know the addresses.
     let mut transports = Vec::new();
     let mut addrs = Vec::new();
+    let mut fingerprints = Vec::new();
     for _ in 0..n {
         let cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+        fingerprints.push(cert.fingerprint.clone());
         let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let transport =
             cross_control_protocol::QuicTransport::bind(bind, &cert.cert_pem, &cert.key_pem)
@@ -606,6 +675,15 @@ where
 
     let specs = build_specs(&addrs);
     assert_eq!(specs.len(), n);
+
+    // Every node trusts every other through a shared known_peers file (the
+    // pair tests cover config pins).
+    let known_peers = scratch_known_peers();
+    let mut lines = String::new();
+    for (spec, fp) in specs.iter().zip(&fingerprints) {
+        writeln!(lines, "{fp} {}", spec.name).unwrap();
+    }
+    std::fs::write(&known_peers, lines).unwrap();
 
     let mut feeds = Vec::new();
     let mut statuses = Vec::new();
@@ -627,6 +705,10 @@ where
             },
             screens: spec.screens,
             screen_adjacency: spec.screen_adjacency,
+            security: SecurityConfig {
+                trust_on_first_use: false,
+                known_peers: Some(known_peers.clone()),
+            },
             ..Config::default()
         };
 
@@ -1420,4 +1502,109 @@ async fn test_leave_works_without_receiver_screen_config() {
     .expect("rcv should send Leave at its left edge even without config");
 
     cluster.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Peer authentication and duplicate connections
+// ---------------------------------------------------------------------------
+
+/// Neither side ends up with a session within `wait`.
+async fn assert_no_session(pair: &TestPair, wait: Duration) {
+    tokio::time::sleep(wait).await;
+    assert_eq!(
+        pair.status_a.borrow().session_count,
+        0,
+        "A must not have a session"
+    );
+    assert_eq!(
+        pair.status_b.borrow().session_count,
+        0,
+        "B must not have a session"
+    );
+}
+
+#[tokio::test]
+async fn test_untrusted_peer_is_refused() {
+    let pair = setup_pair_opts(PairOpts {
+        b_trust: BTrust::Untrusted,
+        ..PairOpts::default()
+    })
+    .await;
+    assert_no_session(&pair, Duration::from_millis(1500)).await;
+    assert!(
+        !pair.known_peers_b.exists(),
+        "an untrusted peer must not be recorded"
+    );
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_peer_with_wrong_certificate_for_its_name_is_refused() {
+    // B trusts "machine-a" — but with another certificate. A connecting as
+    // "machine-a" is an impostor from B's point of view.
+    let pair = setup_pair_opts(PairOpts {
+        b_trust: BTrust::PinsSomeoneElse,
+        ..PairOpts::default()
+    })
+    .await;
+    assert_no_session(&pair, Duration::from_millis(1500)).await;
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_trust_on_first_use_records_peer() {
+    let mut pair = setup_pair_opts(PairOpts {
+        b_trust: BTrust::Tofu,
+        ..PairOpts::default()
+    })
+    .await;
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.session_count == 1
+    })
+    .await
+    .expect("TOFU should accept the first contact");
+    let recorded = std::fs::read_to_string(&pair.known_peers_b).unwrap();
+    assert!(
+        recorded.lines().any(|l| l.ends_with(" machine-a")),
+        "machine-a should be recorded; got:\n{recorded}"
+    );
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_mutual_dial_settles_on_one_session_each() {
+    let mut pair = setup_pair_opts(PairOpts {
+        b_dials_a: true,
+        ..PairOpts::default()
+    })
+    .await;
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake A");
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake B");
+    // Let both connections finish and the duplicate be closed.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(pair.status_a.borrow().session_count, 1);
+    assert_eq!(pair.status_b.borrow().session_count, 1);
+
+    // The surviving session works end to end.
+    for _ in 0..5 {
+        pair.feed_a.send(mouse(500, 0)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.controlled_by.is_some()
+    })
+    .await
+    .expect("A should control B over the surviving connection");
+    assert_eq!(pair.status_a.borrow().session_count, 1);
+    assert_eq!(pair.status_b.borrow().session_count, 1);
+
+    pair.shutdown().await;
 }

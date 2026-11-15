@@ -1,6 +1,7 @@
 //! Peer session management: handshake, enter/leave, device announce.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use cross_control_protocol::{MessageReceiver, MessageSender, PeerConnection};
@@ -13,8 +14,14 @@ use tracing::{debug, info, warn};
 use crate::error::DaemonError;
 use crate::state::SessionState;
 
+/// Source of [`PeerSession::conn_id`].
+static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
+
 /// A session with a single remote peer.
 pub struct PeerSession {
+    /// Unique per connection, never reused. Events from reader tasks carry
+    /// it so those of a replaced connection can be told apart and dropped.
+    pub conn_id: u64,
     pub machine_id: MachineId,
     pub name: String,
     pub remote_layout: DisplayLayout,
@@ -28,6 +35,12 @@ pub struct PeerSession {
     /// Devices announced by the remote peer.
     pub remote_devices: Vec<DeviceInfo>,
     pub connection: PeerConnection,
+    /// SHA-256 fingerprint of the peer's certificate (display form), as
+    /// proven in the TLS handshake. `None` only if it presented none.
+    pub fingerprint: Option<String>,
+    /// The machine that opened this connection. When two connections to the
+    /// same peer race, both sides keep the one opened by the lower id.
+    pub initiated_by: MachineId,
     /// Liveness-ping bookkeeping used to derive the round-trip time.
     latency: LatencyTracker,
 }
@@ -69,7 +82,9 @@ impl PeerSession {
         control_tx: MessageSender,
         control_rx: MessageReceiver,
     ) -> Self {
+        let fingerprint = connection.peer_fingerprint();
         Self {
+            conn_id: NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed),
             machine_id: MachineId::default(),
             name: String::new(),
             remote_layout: DisplayLayout::default(),
@@ -81,6 +96,8 @@ impl PeerSession {
             device_map: HashMap::new(),
             remote_devices: Vec::new(),
             connection,
+            fingerprint,
+            initiated_by: MachineId::default(),
             latency: LatencyTracker::default(),
         }
     }
@@ -116,13 +133,18 @@ impl PeerSession {
 
     /// Perform the initiator side of the handshake: send Hello, receive Welcome.
     ///
+    /// `authorize` is called with the name the peer announces; an error
+    /// aborts the handshake.
+    ///
     /// Must be called before `take_control_rx()` — uses the `control_rx` directly.
     pub async fn handshake_initiator(
         &mut self,
         our_id: MachineId,
         our_name: &str,
         our_layout: &DisplayLayout,
+        authorize: impl FnOnce(&str) -> Result<(), DaemonError>,
     ) -> Result<(), DaemonError> {
+        self.initiated_by = our_id;
         let hello = ControlMessage::Hello {
             version: PROTOCOL_VERSION,
             machine_id: our_id,
@@ -149,6 +171,7 @@ impl PeerSession {
                 layout,
             } => {
                 verify_version(version)?;
+                authorize(&name)?;
                 self.machine_id = machine_id;
                 self.name.clone_from(&name);
                 self.remote_layout = layout;
@@ -166,12 +189,16 @@ impl PeerSession {
 
     /// Perform the responder side of the handshake: receive Hello, send Welcome.
     ///
+    /// `authorize` is called with the name the peer announces, before we send
+    /// anything; an error aborts the handshake.
+    ///
     /// Must be called before `take_control_rx()` — uses the `control_rx` directly.
     pub async fn handshake_responder(
         &mut self,
         our_id: MachineId,
         our_name: &str,
         our_layout: &DisplayLayout,
+        authorize: impl FnOnce(&str) -> Result<(), DaemonError>,
     ) -> Result<(), DaemonError> {
         let rx = self
             .control_rx
@@ -189,7 +216,10 @@ impl PeerSession {
                 layout,
             } => {
                 verify_version(version)?;
+                // Decide before revealing anything about ourselves.
+                authorize(&name)?;
                 self.machine_id = machine_id;
+                self.initiated_by = machine_id;
                 self.name.clone_from(&name);
                 self.remote_layout = layout;
 

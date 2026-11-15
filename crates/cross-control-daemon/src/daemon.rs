@@ -10,7 +10,8 @@ use cross_control_discovery::{
     Discovery, DiscoveryAggregator, DiscoveryEvent, MdnsDiscovery, Peer, StaticDiscovery,
 };
 use cross_control_input::{InputCapture, InputEmulation};
-use cross_control_protocol::QuicTransport;
+use cross_control_protocol::tls::normalize_fingerprint;
+use cross_control_protocol::{PeerConnection, QuicTransport};
 use cross_control_types::{
     ButtonState, CapturedEvent, ClipboardFormat, ClipboardMessage, ControlMessage, DeviceInfo,
     DisplayLayout, InputEvent, InputMessage, KeyCode, MachineId, MouseButton, ScreenEdge,
@@ -23,6 +24,7 @@ use crate::config::Config;
 use crate::error::DaemonError;
 use crate::session::PeerSession;
 use crate::status::{status_file_path, PeerStatus, StatusSnapshot};
+use crate::trust::{TrustError, TrustStore};
 
 /// How often the daemon pings each peer for latency and writes the status
 /// snapshot file the CLI reads.
@@ -129,21 +131,25 @@ fn edge_len(screen: &ScreenGeometry, edge: ScreenEdge) -> u32 {
 /// Events processed by the daemon's main loop.
 pub enum DaemonEvent {
     /// A new peer connected (inbound) — handed off to a background handshake task.
-    IncomingConnection(cross_control_protocol::PeerConnection),
+    IncomingConnection(PeerConnection),
     /// A captured local input event.
     CapturedInput(CapturedEvent),
-    /// A control message from a peer.
+    /// A control message from a peer. `conn_id` identifies the connection
+    /// it arrived on ([`PeerSession::conn_id`]); events from a connection
+    /// that has since been replaced are dropped.
     PeerControl {
         machine_id: MachineId,
+        conn_id: u64,
         msg: ControlMessage,
     },
     /// An input message from a peer.
     PeerInput {
         machine_id: MachineId,
+        conn_id: u64,
         msg: InputMessage,
     },
-    /// A peer disconnected.
-    PeerDisconnected(MachineId),
+    /// A peer's connection closed.
+    PeerDisconnected { machine_id: MachineId, conn_id: u64 },
     /// A fully handshaked session is ready (from a background task). Boxed
     /// because `PeerSession` is much larger than the other variants.
     SessionReady { session: Box<PeerSession> },
@@ -242,6 +248,35 @@ pub struct Daemon {
     /// Handle to the background task that persists the status snapshot, so it
     /// can be stopped cleanly on shutdown before the file is removed.
     status_writer: Option<tokio::task::JoinHandle<()>>,
+    /// Which peers may connect (config pins and `known_peers`).
+    trust: TrustStore,
+}
+
+/// Everything a background handshake task needs, cloned out of the daemon so
+/// the task does not borrow it.
+#[derive(Clone)]
+struct HandshakeCtx {
+    our_id: MachineId,
+    our_name: String,
+    our_layout: DisplayLayout,
+    local_devices: Vec<DeviceInfo>,
+    trust: TrustStore,
+    event_tx: mpsc::Sender<DaemonEvent>,
+}
+
+impl HandshakeCtx {
+    /// The authorization check for a handshake on `conn`: the peer's proven
+    /// certificate fingerprint must be trusted for the name it announces.
+    fn authorizer(&self, conn: &PeerConnection) -> impl FnOnce(&str) -> Result<(), DaemonError> {
+        let trust = self.trust.clone();
+        let fingerprint = conn.peer_fingerprint();
+        move |name| {
+            let fingerprint = fingerprint.ok_or(TrustError::NoCertificate)?;
+            let how = trust.authorize(name, &fingerprint)?;
+            debug!(peer = %name, ?how, "peer authorized");
+            Ok(())
+        }
+    }
 }
 
 impl Daemon {
@@ -255,6 +290,8 @@ impl Daemon {
     ) -> Self {
         let layout = config.display_layout();
         let screen = layout.bounding_box();
+        let trust =
+            TrustStore::from_config(&config, crate::setup::config_dir().join("known_peers"));
         let (event_tx, event_rx) = mpsc::channel(1024);
         let cursor_x = screen
             .x
@@ -317,6 +354,18 @@ impl Daemon {
             status_snapshot: Arc::new(Mutex::new(StatusSnapshot::default())),
             next_ping_seq: 0,
             status_writer: None,
+            trust,
+        }
+    }
+
+    fn handshake_ctx(&self) -> HandshakeCtx {
+        HandshakeCtx {
+            our_id: self.machine_id,
+            our_name: self.config.identity.name.clone(),
+            our_layout: self.layout.clone(),
+            local_devices: self.local_devices.clone(),
+            trust: self.trust.clone(),
+            event_tx: self.event_tx.clone(),
         }
     }
 
@@ -375,48 +424,11 @@ impl Daemon {
         // gets its own handshake task so the event loop never blocks.
         {
             let transport = self.transport.clone();
-            let event_tx = self.event_tx.clone();
-            let our_id = self.machine_id;
-            let our_name = self.config.identity.name.clone();
-            let our_layout = self.layout.clone();
-            let local_devices = self.local_devices.clone();
+            let ctx = self.handshake_ctx();
             tokio::spawn(async move {
                 loop {
                     match transport.accept().await {
-                        Ok(conn) => {
-                            let tx = event_tx.clone();
-                            let name = our_name.clone();
-                            let layout = our_layout.clone();
-                            let devs = local_devices.clone();
-                            tokio::spawn(async move {
-                                let remote = conn.remote_address();
-                                match perform_handshake_responder(
-                                    conn, our_id, &name, &layout, &devs,
-                                )
-                                .await
-                                {
-                                    Ok(session) => {
-                                        info!(
-                                            peer = %session.name,
-                                            remote = %remote,
-                                            "inbound handshake complete"
-                                        );
-                                        let _ = tx
-                                            .send(DaemonEvent::SessionReady {
-                                                session: Box::new(session),
-                                            })
-                                            .await;
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            remote = %remote,
-                                            error = %e,
-                                            "inbound handshake failed"
-                                        );
-                                    }
-                                }
-                            });
-                        }
+                        Ok(conn) => spawn_inbound_handshake(conn, ctx.clone()),
                         Err(e) => {
                             debug!(error = %e, "accept loop ending");
                             break;
@@ -480,11 +492,7 @@ impl Daemon {
             match aggregator.browse().await {
                 Ok(mut rx) => {
                     let transport = self.transport.clone();
-                    let event_tx = self.event_tx.clone();
-                    let our_id = self.machine_id;
-                    let our_name = self.config.identity.name.clone();
-                    let our_layout = self.layout.clone();
-                    let local_devices = self.local_devices.clone();
+                    let ctx = self.handshake_ctx();
                     let dialed = Arc::clone(&self.dialed_addrs);
                     tokio::spawn(async move {
                         while let Some(event) = rx.recv().await {
@@ -500,11 +508,7 @@ impl Daemon {
                                     spawn_outbound_handshake(
                                         transport.clone(),
                                         peer,
-                                        our_id,
-                                        our_name.clone(),
-                                        our_layout.clone(),
-                                        local_devices.clone(),
-                                        event_tx.clone(),
+                                        ctx.clone(),
                                         Arc::clone(&dialed),
                                     );
                                 }
@@ -626,51 +630,43 @@ impl Daemon {
             DaemonEvent::CapturedInput(captured) => {
                 self.handle_captured_input(captured).await;
             }
-            DaemonEvent::PeerControl { machine_id, msg } => {
-                self.handle_peer_control(machine_id, msg).await;
+            DaemonEvent::PeerControl {
+                machine_id,
+                conn_id,
+                msg,
+            } => {
+                if self.is_current(machine_id, conn_id) {
+                    self.handle_peer_control(machine_id, msg).await;
+                }
             }
-            DaemonEvent::PeerInput { machine_id, msg } => {
-                self.handle_peer_input(machine_id, msg).await;
+            DaemonEvent::PeerInput {
+                machine_id,
+                conn_id,
+                msg,
+            } => {
+                if self.is_current(machine_id, conn_id) {
+                    self.handle_peer_input(machine_id, msg).await;
+                }
             }
-            DaemonEvent::PeerDisconnected(machine_id) => {
-                self.handle_peer_disconnected(machine_id).await;
+            DaemonEvent::PeerDisconnected {
+                machine_id,
+                conn_id,
+            } => {
+                if self.is_current(machine_id, conn_id) {
+                    self.handle_peer_disconnected(machine_id).await;
+                } else {
+                    debug!(peer = %machine_id, conn_id, "ignoring disconnect of a replaced connection");
+                }
             }
             DaemonEvent::SessionReady { session } => {
-                self.handle_session_ready(*session);
+                self.handle_session_ready(*session).await;
             }
             DaemonEvent::Shutdown => {
                 info!("shutting down");
                 return true;
             }
             DaemonEvent::IncomingConnection(conn) => {
-                // Spawn handshake in background so we don't block the event loop.
-                let tx = self.event_tx.clone();
-                let our_id = self.machine_id;
-                let our_name = self.config.identity.name.clone();
-                let our_layout = self.layout.clone();
-                let local_devices = self.local_devices.clone();
-                tokio::spawn(async move {
-                    match perform_handshake_responder(
-                        conn,
-                        our_id,
-                        &our_name,
-                        &our_layout,
-                        &local_devices,
-                    )
-                    .await
-                    {
-                        Ok(session) => {
-                            let _ = tx
-                                .send(DaemonEvent::SessionReady {
-                                    session: Box::new(session),
-                                })
-                                .await;
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "incoming connection handshake failed");
-                        }
-                    }
-                });
+                spawn_inbound_handshake(conn, self.handshake_ctx());
             }
         }
         self.broadcast_status();
@@ -691,9 +687,54 @@ impl Daemon {
         });
     }
 
-    fn handle_session_ready(&mut self, session: PeerSession) {
+    /// Whether `conn_id` is the live connection to `machine_id`.
+    fn is_current(&self, machine_id: MachineId, conn_id: u64) -> bool {
+        self.sessions
+            .get(&machine_id)
+            .is_some_and(|s| s.conn_id == conn_id)
+    }
+
+    async fn handle_session_ready(&mut self, session: PeerSession) {
         let peer_id = session.machine_id;
         let peer_name = session.name.clone();
+
+        if peer_id == self.machine_id {
+            warn!(peer = %peer_name, "peer claims our own machine id; dropping connection");
+            session.connection.close_with_reason("machine id collision");
+            return;
+        }
+
+        if let Some(existing) = self.sessions.get(&peer_id) {
+            // A machine id is only as good as the certificate behind it: an
+            // authorized peer must not take over another peer's session.
+            if existing.fingerprint != session.fingerprint {
+                warn!(
+                    peer = %peer_name,
+                    id = %peer_id,
+                    "a different certificate claims an existing peer's machine id; dropping it"
+                );
+                session.connection.close_with_reason("machine id in use");
+                return;
+            }
+            // Two connections to the same peer, usually because both sides
+            // dialed at once.
+            let keep_new = keep_new_connection(
+                self.machine_id,
+                peer_id,
+                existing.initiated_by,
+                session.initiated_by,
+            );
+            if !keep_new {
+                debug!(peer = %peer_name, "duplicate connection; keeping the existing one");
+                session.connection.close_with_reason("duplicate connection");
+                return;
+            }
+            debug!(peer = %peer_name, "duplicate connection; replacing the existing one");
+            let old = existing.connection.clone();
+            self.handle_peer_disconnected(peer_id).await;
+            old.close_with_reason("superseded by a newer connection");
+        }
+
         let remote_addr = session.connection.remote_address();
         // Reserve the address so subsequent discovery events for this peer
         // don't trigger a redundant outbound dial. Released on disconnect.
@@ -704,12 +745,18 @@ impl Daemon {
     }
 
     fn spawn_control_reader(&mut self, peer_id: MachineId) {
-        let mut control_rx = self
-            .sessions
-            .get_mut(&peer_id)
-            .and_then(PeerSession::take_control_rx)
+        let Some(session) = self.sessions.get_mut(&peer_id) else {
+            return;
+        };
+        let conn_id = session.conn_id;
+        let mut control_rx = session
+            .take_control_rx()
             .expect("control_rx should exist after handshake");
         let event_tx = self.event_tx.clone();
+        let disconnected = DaemonEvent::PeerDisconnected {
+            machine_id: peer_id,
+            conn_id,
+        };
         tokio::spawn(async move {
             loop {
                 match control_rx.recv::<ControlMessage>().await {
@@ -717,6 +764,7 @@ impl Daemon {
                         if event_tx
                             .send(DaemonEvent::PeerControl {
                                 machine_id: peer_id,
+                                conn_id,
                                 msg,
                             })
                             .await
@@ -727,12 +775,12 @@ impl Daemon {
                     }
                     Ok(None) => {
                         // Stream closed cleanly
-                        let _ = event_tx.send(DaemonEvent::PeerDisconnected(peer_id)).await;
+                        let _ = event_tx.send(disconnected).await;
                         break;
                     }
                     Err(e) => {
                         debug!(peer = %peer_id, error = %e, "control reader error");
-                        let _ = event_tx.send(DaemonEvent::PeerDisconnected(peer_id)).await;
+                        let _ = event_tx.send(disconnected).await;
                         break;
                     }
                 }
@@ -749,12 +797,13 @@ impl Daemon {
             return;
         };
         let connection = session.connection.clone();
+        let conn_id = session.conn_id;
         let event_tx = self.event_tx.clone();
         tokio::spawn(async move {
             match connection.accept_input_stream().await {
                 Ok(input_rx) => {
                     debug!(peer = %peer_id, "accepted input stream from controller");
-                    Self::spawn_input_reader_task(event_tx, input_rx, peer_id);
+                    Self::spawn_input_reader_task(event_tx, input_rx, peer_id, conn_id);
                 }
                 Err(e) => {
                     warn!(peer = %peer_id, error = %e, "failed to accept input stream");
@@ -767,6 +816,7 @@ impl Daemon {
         event_tx: mpsc::Sender<DaemonEvent>,
         mut input_rx: cross_control_protocol::MessageReceiver,
         peer_id: MachineId,
+        conn_id: u64,
     ) {
         tokio::spawn(async move {
             loop {
@@ -775,6 +825,7 @@ impl Daemon {
                         if event_tx
                             .send(DaemonEvent::PeerInput {
                                 machine_id: peer_id,
+                                conn_id,
                                 msg,
                             })
                             .await
@@ -1509,6 +1560,21 @@ fn richest_format(formats: &[ClipboardFormat]) -> Option<ClipboardFormat> {
     .find(|f| formats.contains(f))
 }
 
+/// Given an existing connection to a peer and a new one, whether to keep the
+/// new one. Both machines evaluate this independently, possibly seeing the
+/// two connections in opposite orders, and must keep the same connection:
+/// the one opened by the lower machine id. A reconnection from the same side
+/// replaces the old (presumably dead) connection.
+fn keep_new_connection(
+    us: MachineId,
+    peer: MachineId,
+    existing_initiator: MachineId,
+    new_initiator: MachineId,
+) -> bool {
+    existing_initiator == new_initiator
+        || new_initiator.as_uuid() == us.as_uuid().min(peer.as_uuid())
+}
+
 /// Try to reserve a `SocketAddr` for an outbound dial. Returns `true` if this
 /// caller now owns the dial; `false` if another task got there first.
 fn claim_dial(dialed: &Arc<Mutex<HashSet<SocketAddr>>>, addr: SocketAddr) -> bool {
@@ -1528,114 +1594,163 @@ fn release_dial(dialed: &Arc<Mutex<HashSet<SocketAddr>>>, addr: SocketAddr) {
     }
 }
 
+/// Spawn a background task that runs the responder handshake on an
+/// accepted connection and hands the session to the daemon.
+fn spawn_inbound_handshake(conn: PeerConnection, ctx: HandshakeCtx) {
+    tokio::spawn(async move {
+        let remote = conn.remote_address();
+        match perform_handshake_responder(conn, &ctx).await {
+            Ok(session) => {
+                info!(peer = %session.name, remote = %remote, "inbound handshake complete");
+                let _ = ctx
+                    .event_tx
+                    .send(DaemonEvent::SessionReady {
+                        session: Box::new(session),
+                    })
+                    .await;
+            }
+            Err(e) => warn!(remote = %remote, error = %e, "inbound handshake failed"),
+        }
+    });
+}
+
 /// Spawn a background task that connects to `peer`, completes the initiator
 /// handshake, and forwards the resulting [`PeerSession`] back to the daemon
 /// via [`DaemonEvent::SessionReady`]. Releases the dial slot on failure.
-#[allow(clippy::too_many_arguments)]
+///
+/// The certificate is pinned to what the trust store holds for the peer's
+/// name. A fingerprint from discovery (mDNS TXT) is not used for that: anyone
+/// on the LAN can advertise one, so it is only a hint.
 fn spawn_outbound_handshake(
     transport: QuicTransport,
     peer: Peer,
-    our_id: MachineId,
-    our_name: String,
-    our_layout: DisplayLayout,
-    local_devices: Vec<DeviceInfo>,
-    event_tx: mpsc::Sender<DaemonEvent>,
+    ctx: HandshakeCtx,
     dialed: Arc<Mutex<HashSet<SocketAddr>>>,
 ) {
     tokio::spawn(async move {
         let addr = peer.address;
-        match transport
-            .connect_pinned(addr, "cross-control", peer.fingerprint.clone())
-            .await
-        {
-            Ok(conn) => {
-                match perform_handshake_initiator(
-                    conn,
-                    our_id,
-                    &our_name,
-                    &our_layout,
-                    &local_devices,
-                )
-                .await
+        let pin = ctx.trust.pin_for(&peer.name);
+        if let (Some(hint), Some(pin)) = (&peer.fingerprint, &pin) {
+            if normalize_fingerprint(hint) != normalize_fingerprint(pin) {
+                debug!(peer = %peer.name, "advertised fingerprint differs from the trusted one");
+            }
+        }
+        let result = match transport.connect_pinned(addr, "cross-control", pin).await {
+            Ok(conn) => perform_handshake_initiator(conn, &ctx).await,
+            Err(e) => Err(e.into()),
+        };
+        match result {
+            Ok(session) => {
+                info!(peer = %session.name, address = %addr, "outbound handshake complete");
+                if ctx
+                    .event_tx
+                    .send(DaemonEvent::SessionReady {
+                        session: Box::new(session),
+                    })
+                    .await
+                    .is_err()
                 {
-                    Ok(session) => {
-                        info!(
-                            peer = %session.name,
-                            address = %addr,
-                            "outbound handshake complete"
-                        );
-                        if event_tx
-                            .send(DaemonEvent::SessionReady {
-                                session: Box::new(session),
-                            })
-                            .await
-                            .is_err()
-                        {
-                            release_dial(&dialed, addr);
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            peer = %peer.name,
-                            address = %addr,
-                            error = %e,
-                            "outbound handshake failed"
-                        );
-                        release_dial(&dialed, addr);
-                    }
+                    release_dial(&dialed, addr);
                 }
             }
             Err(e) => {
-                warn!(
-                    address = %addr,
-                    error = %e,
-                    "failed to connect to peer"
-                );
+                warn!(peer = %peer.name, address = %addr, error = %e, "outbound handshake failed");
                 release_dial(&dialed, addr);
             }
         }
     });
 }
 
-/// Perform a responder handshake in a background task (accept bidi stream,
-/// read Hello, send Welcome, announce devices).
+/// Close `conn` after a failed handshake, telling the peer why when it was
+/// refused authorization.
+fn close_failed(conn: &PeerConnection, error: &DaemonError) {
+    let reason = match error {
+        DaemonError::Untrusted(_) => "not authorized",
+        _ => "handshake failed",
+    };
+    conn.close_with_reason(reason);
+}
+
+/// Responder handshake (accept bidi stream, read Hello, authorize, send
+/// Welcome, announce devices).
 async fn perform_handshake_responder(
-    conn: cross_control_protocol::PeerConnection,
-    our_id: MachineId,
-    our_name: &str,
-    our_layout: &DisplayLayout,
-    local_devices: &[DeviceInfo],
+    conn: PeerConnection,
+    ctx: &HandshakeCtx,
 ) -> Result<PeerSession, DaemonError> {
+    let authorize = ctx.authorizer(&conn);
     let (control_tx, control_rx) = conn.accept_control_stream().await?;
-    let mut session = PeerSession::new(conn, control_tx, control_rx);
-    session
-        .handshake_responder(our_id, our_name, our_layout)
-        .await?;
-    session.announce_devices(local_devices).await?;
+    let mut session = PeerSession::new(conn.clone(), control_tx, control_rx);
+    let result = async {
+        session
+            .handshake_responder(ctx.our_id, &ctx.our_name, &ctx.our_layout, authorize)
+            .await?;
+        session.announce_devices(&ctx.local_devices).await
+    }
+    .await;
+    if let Err(e) = result {
+        close_failed(&conn, &e);
+        return Err(e);
+    }
     Ok(session)
 }
 
-/// Perform an initiator handshake in a background task (open bidi stream,
-/// send Hello, read Welcome, announce devices).
+/// Initiator handshake (open bidi stream, send Hello, read Welcome,
+/// authorize, announce devices).
 async fn perform_handshake_initiator(
-    conn: cross_control_protocol::PeerConnection,
-    our_id: MachineId,
-    our_name: &str,
-    our_layout: &DisplayLayout,
-    local_devices: &[DeviceInfo],
+    conn: PeerConnection,
+    ctx: &HandshakeCtx,
 ) -> Result<PeerSession, DaemonError> {
+    let authorize = ctx.authorizer(&conn);
     let (control_tx, control_rx) = conn.open_control_stream().await?;
-    let mut session = PeerSession::new(conn, control_tx, control_rx);
-    session
-        .handshake_initiator(our_id, our_name, our_layout)
-        .await?;
-    session.announce_devices(local_devices).await?;
+    let mut session = PeerSession::new(conn.clone(), control_tx, control_rx);
+    let result = async {
+        session
+            .handshake_initiator(ctx.our_id, &ctx.our_name, &ctx.our_layout, authorize)
+            .await?;
+        session.announce_devices(&ctx.local_devices).await
+    }
+    .await;
+    if let Err(e) = result {
+        close_failed(&conn, &e);
+        return Err(e);
+    }
     Ok(session)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_sides_keep_the_same_duplicate_connection() {
+        for _ in 0..50 {
+            let (a, b) = (MachineId::new(), MachineId::new());
+            // Connections opened by A and by B. Each side may see either one
+            // first; whichever arrives second is "new".
+            for (first, second) in [(a, b), (b, a)] {
+                for (a_first, b_first) in [(first, second), (second, first)] {
+                    let a_sees_second = if a_first == a { b } else { a };
+                    let b_sees_second = if b_first == a { b } else { a };
+                    let a_keeps = if keep_new_connection(a, b, a_first, a_sees_second) {
+                        a_sees_second
+                    } else {
+                        a_first
+                    };
+                    let b_keeps = if keep_new_connection(b, a, b_first, b_sees_second) {
+                        b_sees_second
+                    } else {
+                        b_first
+                    };
+                    assert_eq!(a_keeps, b_keeps, "sides disagree");
+                    let lower = if a.as_uuid() < b.as_uuid() { a } else { b };
+                    assert_eq!(a_keeps, lower, "must keep the lower id's connection");
+                }
+            }
+            // A reconnection from the same side replaces the old one.
+            assert!(keep_new_connection(a, b, b, b));
+            assert!(keep_new_connection(a, b, a, a));
+        }
+    }
 
     #[test]
     fn scale_maps_between_resolutions() {

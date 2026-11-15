@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — mutual authentication and explicit peer trust
+
+**Breaking:** peers are now refused unless trusted. After upgrading, pair your machines once (`cross-control pair`) or pin fingerprints in `config.toml`.
+
+- **Handshake signatures are verified.** The certificate verifier introduced in [#2] (below) compared fingerprints but accepted any handshake signature, so presenting a trusted peer's public certificate was enough to pass the pin. Both directions now use rustls' standard signature verification: a peer must hold the private key behind the fingerprint it claims. Regression tests forge a signature in each direction.
+- **Mutual TLS.** The server previously accepted any client. Clients now must present their certificate and prove possession of its key; the daemon reads the peer's fingerprint after the handshake.
+- **Peer authorization.** A peer is accepted only if its `(name, fingerprint)` is trusted: a `[[screens]] fingerprint` pin, or an entry in the new `known_peers` file (`~/.config/cross-control/known_peers`, mode 0600, written atomically). A trusted name with a different certificate is always refused, and a trusted certificate cannot claim another name. The responder decides before revealing anything about itself, and tells a refused peer why.
+- **Trust-on-first-use is opt-in** via `[security] trust_on_first_use` (default off). The old behaviour accepted anyone on first contact.
+- **mDNS fingerprints are hints only.** Outbound connections are pinned to the trust store, not to whatever fingerprint a (forgeable) mDNS advert carries.
+- **New `cross-control trust` command** (`list` / `add <name> <fingerprint>` / `remove <name>`), which also shows this machine's own fingerprint.
+- **`cross-control pair` records the peer.** It shows the fingerprint and asks before trusting it (`--yes` to skip; refuses without a terminal), saves it to `known_peers`, and prints the `trust add` command for the other machine. `--name` covers peers that do not trust us yet and so will not announce their name.
+- **Duplicate and stale connections.** When two connections to the same peer race (both sides dial at once), both sides keep the one opened by the lower machine id. Events carry a per-connection id, so a replaced connection's late events or disconnect no longer tear down the live session. A session claiming an existing peer's machine id with a different certificate is dropped.
+- `cross-control status` shows this machine's name and fingerprint even when the daemon is stopped.
+
 ### Security — TOFU certificate pinning is now enforced ([#2])
 
 - **The QUIC client now verifies peer certificates by SHA-256 fingerprint.** Previously the client skipped certificate verification entirely (an MVP placeholder), so the "trust-on-first-use pinning" of ADR 0002 was documented but not enforced. A new `FingerprintVerifier` closes that gap: when a peer's fingerprint is known — from a `[[screens]] fingerprint` entry or an mDNS TXT advert — the TLS handshake is refused unless the presented certificate hashes to it; on genuine first contact (no pin) the certificate is accepted (TOFU). Fingerprints are compared in canonical form, so the colon-grouped config format and the compact mDNS format interoperate.

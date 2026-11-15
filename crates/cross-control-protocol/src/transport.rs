@@ -1,6 +1,7 @@
 //! QUIC transport: bind, accept, and connect.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use quinn::Endpoint;
 use tracing::{debug, info};
@@ -16,6 +17,13 @@ use crate::tls;
 #[derive(Clone)]
 pub struct QuicTransport {
     endpoint: Endpoint,
+    /// Our certificate and key (PEM), presented on every outbound connection.
+    identity: Arc<Identity>,
+}
+
+struct Identity {
+    cert_pem: String,
+    key_pem: String,
 }
 
 impl QuicTransport {
@@ -25,19 +33,28 @@ impl QuicTransport {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let server_config = tls::server_config(cert_pem, key_pem)?;
-        // Default client config pins nothing (first-contact TOFU); callers that
-        // know the peer's fingerprint use `connect_pinned` to enforce it.
-        let client_config = tls::client_config_pinned(None)?;
+        // Default client config pins nothing; callers that know the peer's
+        // fingerprint use `connect_pinned` to enforce it at the TLS layer.
+        let client_config = tls::client_config_pinned(cert_pem, key_pem, None)?;
 
         let mut endpoint = Endpoint::server(server_config, addr)
             .map_err(|e| ProtocolError::Connection(e.to_string()))?;
         endpoint.set_default_client_config(client_config);
 
         info!(addr = %addr, "QUIC transport bound");
-        Ok(Self { endpoint })
+        Ok(Self {
+            endpoint,
+            identity: Arc::new(Identity {
+                cert_pem: cert_pem.to_string(),
+                key_pem: key_pem.to_string(),
+            }),
+        })
     }
 
-    /// Accept an incoming connection.
+    /// Accept an incoming connection. The peer has presented a certificate
+    /// and proved it holds the key; whether that certificate is *trusted* is
+    /// for the caller to decide from
+    /// [`PeerConnection::peer_fingerprint`].
     pub async fn accept(&self) -> Result<PeerConnection, ProtocolError> {
         let incoming = self
             .endpoint
@@ -54,8 +71,8 @@ impl QuicTransport {
         Ok(PeerConnection::new(connection))
     }
 
-    /// Connect to a remote peer, using the default (first-contact) client
-    /// config — the presented certificate is accepted whatever its fingerprint.
+    /// Connect to a remote peer without pinning its certificate. The caller
+    /// must check [`PeerConnection::peer_fingerprint`] before trusting it.
     pub async fn connect(
         &self,
         addr: SocketAddr,
@@ -75,15 +92,18 @@ impl QuicTransport {
     /// Connect to a remote peer, pinning its certificate by SHA-256
     /// fingerprint. When `expected_fingerprint` is `Some`, the TLS handshake
     /// fails unless the peer presents a certificate with that fingerprint;
-    /// when `None`, this behaves like [`connect`](Self::connect) (first-contact
-    /// TOFU).
+    /// when `None`, this behaves like [`connect`](Self::connect).
     pub async fn connect_pinned(
         &self,
         addr: SocketAddr,
         server_name: &str,
         expected_fingerprint: Option<String>,
     ) -> Result<PeerConnection, ProtocolError> {
-        let client_config = tls::client_config_pinned(expected_fingerprint)?;
+        let client_config = tls::client_config_pinned(
+            &self.identity.cert_pem,
+            &self.identity.key_pem,
+            expected_fingerprint,
+        )?;
         let connection = self
             .endpoint
             .connect_with(client_config, addr, server_name)

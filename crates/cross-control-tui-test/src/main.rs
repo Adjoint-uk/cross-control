@@ -27,6 +27,7 @@ use ratatui::Terminal;
 
 use cross_control_daemon::config::{
     Config, DaemonConfig, IdentityConfig, InputConfig, ScreenAdjacency, ScreenConfig,
+    SecurityConfig,
 };
 use cross_control_daemon::{Daemon, DaemonEvent};
 use cross_control_input::mock::{MockCapture, MockEmulation};
@@ -98,6 +99,12 @@ fn create_daemon(
         input: release_hotkey(),
         screens,
         screen_adjacency,
+        // Peers are pinned in `screens`; keep the user's own known_peers out
+        // of the demo.
+        security: SecurityConfig {
+            trust_on_first_use: false,
+            known_peers: Some(std::env::temp_dir().join("cross-control-tui-test.known_peers")),
+        },
         ..Config::default()
     };
 
@@ -174,13 +181,13 @@ async fn setup_daemons() -> Result<Handles, Box<dyn std::error::Error>> {
                 name: "B".to_string(),
                 address: Some(addr_b.to_string()),
                 position: Position::Right,
-                fingerprint: None,
+                fingerprint: Some(cert_b.fingerprint.clone()),
             },
             ScreenConfig {
                 name: "C".to_string(),
                 address: Some(addr_c.to_string()),
                 position: Position::Below,
-                fingerprint: None,
+                fingerprint: Some(cert_c.fingerprint.clone()),
             },
         ],
         // Full graph edges that A needs for multi-hop navigation.
@@ -209,13 +216,13 @@ async fn setup_daemons() -> Result<Handles, Box<dyn std::error::Error>> {
                 name: "A".to_string(),
                 address: None, // A connects to us
                 position: Position::Left,
-                fingerprint: None,
+                fingerprint: Some(cert_a.fingerprint.clone()),
             },
             ScreenConfig {
                 name: "D".to_string(),
                 address: Some(addr_d.to_string()),
                 position: Position::Below,
-                fingerprint: None,
+                fingerprint: Some(cert_d.fingerprint.clone()),
             },
         ],
         vec![],
@@ -230,13 +237,13 @@ async fn setup_daemons() -> Result<Handles, Box<dyn std::error::Error>> {
                 name: "A".to_string(),
                 address: None, // A connects to us
                 position: Position::Above,
-                fingerprint: None,
+                fingerprint: Some(cert_a.fingerprint.clone()),
             },
             ScreenConfig {
                 name: "D".to_string(),
                 address: Some(addr_d.to_string()),
                 position: Position::Right,
-                fingerprint: None,
+                fingerprint: Some(cert_d.fingerprint.clone()),
             },
         ],
         vec![],
@@ -251,13 +258,13 @@ async fn setup_daemons() -> Result<Handles, Box<dyn std::error::Error>> {
                 name: "B".to_string(),
                 address: None, // B connects to us
                 position: Position::Above,
-                fingerprint: None,
+                fingerprint: Some(cert_b.fingerprint.clone()),
             },
             ScreenConfig {
                 name: "C".to_string(),
                 address: None, // C connects to us
                 position: Position::Left,
-                fingerprint: None,
+                fingerprint: Some(cert_c.fingerprint.clone()),
             },
         ],
         vec![],

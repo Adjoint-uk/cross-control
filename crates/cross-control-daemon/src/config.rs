@@ -24,6 +24,9 @@ pub struct Config {
     /// single monitor sized by `daemon.screen_width`/`screen_height`.
     #[serde(default)]
     pub monitors: Vec<MonitorConfig>,
+    /// Peer authentication settings.
+    #[serde(default)]
+    pub security: SecurityConfig,
 }
 
 impl Config {
@@ -84,6 +87,10 @@ impl Config {
             }
             if !names.insert(sc.name.as_str()) {
                 return Err(format!("duplicate screen name \"{}\"", sc.name));
+            }
+            if let Some(fp) = &sc.fingerprint {
+                crate::trust::parse_fingerprint(fp)
+                    .map_err(|e| format!("screen \"{}\": {e}", sc.name))?;
             }
         }
 
@@ -235,6 +242,24 @@ impl Default for InputConfig {
             release_hotkey: default_release_hotkey(),
         }
     }
+}
+
+/// Peer authentication settings.
+///
+/// Every connection is mutually authenticated with TLS certificates; these
+/// settings decide which certificates are trusted (see `trust.rs`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// Accept and remember peers that are not yet trusted. Convenient on a
+    /// network you control, but the first connection is unauthenticated:
+    /// anyone reachable can become a trusted peer. Off by default — use
+    /// `cross-control pair` / `cross-control trust add` instead.
+    #[serde(default)]
+    pub trust_on_first_use: bool,
+    /// Location of the `known_peers` file. Defaults to `known_peers` in the
+    /// configuration directory.
+    #[serde(default)]
+    pub known_peers: Option<std::path::PathBuf>,
 }
 
 /// Clipboard subsystem settings.

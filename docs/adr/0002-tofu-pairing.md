@@ -114,3 +114,29 @@ The `known_peers` file does not exist yet — the current implementation pins vi
 - The clinical positioning becomes a primary use case and requires CA-based identity for compliance.
 
 None likely in the v1.x series.
+
+## Amendment — mutual authentication and explicit trust (2026-11)
+
+A security review found that the first implementation of this ADR did not deliver what it promised:
+
+- the client compared the server's certificate fingerprint but **did not verify the TLS handshake signature**, so anyone could present a trusted peer's (public) certificate and pass the pin;
+- the server **did not authenticate clients at all**, so any host that could reach the port could connect and inject input;
+- a fingerprint learned from an **mDNS advert was used as the pin**, although anyone on the LAN can send mDNS.
+
+The implemented model is now:
+
+1. **Mutual TLS.** Both sides present their self-signed certificate, and both handshake signatures are verified against it (rustls' standard TLS 1.2/1.3 signature verification), so a peer must hold the private key behind the fingerprint it claims.
+2. **Identity = (name, certificate fingerprint).** After the TLS handshake each side checks the name the other announces (`Hello` / `Welcome`) against its trust store. The responder decides before sending anything back.
+3. **Trust store.** `[[screens]] fingerprint` pins in `config.toml`, plus a `known_peers` file (`<fingerprint> <name>` per line, mode 0600) written by `cross-control pair` (after showing the fingerprint and asking) and `cross-control trust add`. A trusted name with a different fingerprint is always refused; a trusted fingerprint cannot claim another name.
+4. **Trust-on-first-use is opt-in** (`security.trust_on_first_use`, default off). When on, an unknown name is recorded on first contact, with the first-contact window documented above.
+5. **mDNS is a hint only.** Outbound connections are pinned to the trust store's fingerprint for the peer's name; the advertised fingerprint never establishes trust.
+6. **Machine IDs are bound to certificates.** A second session claiming an existing peer's `MachineId` with a different certificate is dropped.
+
+Revised rows of the threat table:
+
+| Threat | Protected? | Notes |
+|---|---|---|
+| Unknown host connects and injects input | Yes | Refused unless its (name, fingerprint) is trusted |
+| Attacker replays a trusted peer's certificate | Yes | Handshake signature must verify against it |
+| Active MitM on first contact, mDNS fingerprint | Yes (default) | mDNS never establishes trust; pairing shows the fingerprint for out-of-band comparison |
+| Active MitM on first contact with `trust_on_first_use = true` | **No** | The documented TOFU window; off by default |

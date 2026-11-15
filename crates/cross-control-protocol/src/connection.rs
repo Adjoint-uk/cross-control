@@ -25,6 +25,12 @@ impl PeerConnection {
         self.connection.remote_address()
     }
 
+    /// Close the connection with an application reason.
+    pub fn close_with_reason(&self, reason: &str) {
+        self.connection
+            .close(quinn::VarInt::from_u32(1), reason.as_bytes());
+    }
+
     /// The SHA-256 fingerprint of the peer's TLS certificate, in display form
     /// (`SHA256:aa:bb:…`). `None` if the peer presented no certificate. Used
     /// by `pair` to show the user a fingerprint to pin.
