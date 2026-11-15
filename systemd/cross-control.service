@@ -1,6 +1,9 @@
 # cross-control — systemd *user* service.
 #
-# Install:
+# Easiest: `cross-control service install --enable` generates an equivalent
+# unit pointing at wherever the binary actually lives.
+#
+# Manual install:
 #   mkdir -p ~/.config/systemd/user
 #   cp systemd/cross-control.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload

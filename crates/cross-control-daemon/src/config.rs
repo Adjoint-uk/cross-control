@@ -61,6 +61,13 @@ impl Config {
     pub fn validate(&self) -> Result<(), String> {
         let me = self.identity.name.as_str();
 
+        if self.identity.cert.is_some() != self.identity.key.is_some() {
+            return Err(
+                "identity.cert and identity.key must be set together (or both left out)"
+                    .to_string(),
+            );
+        }
+
         // Every declared monitor must have a non-zero size, or edge detection
         // against the combined desktop breaks.
         for (i, m) in self.monitors.iter().enumerate() {
@@ -219,12 +226,22 @@ impl Default for DaemonConfig {
 pub struct IdentityConfig {
     #[serde(default = "default_name")]
     pub name: String,
+    /// TLS certificate (PEM) to use instead of the one generated in the
+    /// configuration directory — e.g. issued by your own PKI or deployed by
+    /// configuration management. Set together with `key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert: Option<std::path::PathBuf>,
+    /// Private key (PEM) for `cert`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<std::path::PathBuf>,
 }
 
 impl Default for IdentityConfig {
     fn default() -> Self {
         Self {
             name: default_name(),
+            cert: None,
+            key: None,
         }
     }
 }

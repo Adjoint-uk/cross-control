@@ -142,6 +142,7 @@ async fn run(real: bool) -> Result<(), Box<dyn std::error::Error>> {
         },
         identity: IdentityConfig {
             name: "machine-a".to_string(),
+            ..IdentityConfig::default()
         },
         screens: vec![ScreenConfig {
             name: "machine-b".to_string(),
@@ -166,6 +167,7 @@ async fn run(real: bool) -> Result<(), Box<dyn std::error::Error>> {
         },
         identity: IdentityConfig {
             name: "machine-b".to_string(),
+            ..IdentityConfig::default()
         },
         screens: vec![ScreenConfig {
             name: "machine-a".to_string(),

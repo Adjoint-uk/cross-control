@@ -95,6 +95,7 @@ fn create_daemon(
         daemon: daemon_config(),
         identity: IdentityConfig {
             name: name.to_string(),
+            ..IdentityConfig::default()
         },
         input: release_hotkey(),
         screens,

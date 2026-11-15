@@ -151,6 +151,7 @@ async fn setup_pair_opts(opts: PairOpts) -> TestPair {
         },
         identity: IdentityConfig {
             name: "machine-a".to_string(),
+            ..IdentityConfig::default()
         },
         screens: vec![ScreenConfig {
             name: "machine-b".to_string(),
@@ -184,6 +185,7 @@ async fn setup_pair_opts(opts: PairOpts) -> TestPair {
         },
         identity: IdentityConfig {
             name: "machine-b".to_string(),
+            ..IdentityConfig::default()
         },
         screens: vec![ScreenConfig {
             name: "machine-a".to_string(),
@@ -705,6 +707,7 @@ where
             },
             identity: IdentityConfig {
                 name: spec.name.clone(),
+                ..IdentityConfig::default()
             },
             screens: spec.screens,
             screen_adjacency: spec.screen_adjacency,
@@ -1634,6 +1637,7 @@ async fn test_device_announcements_are_capped_and_deduplicated() {
     let config = Config {
         identity: IdentityConfig {
             name: "target".to_string(),
+            ..IdentityConfig::default()
         },
         screens: vec![ScreenConfig {
             name: "flooder".to_string(),

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — automation-friendly CLI
+
+- **`--json` and `--config` on every command.** With `--json`, stdout is a single JSON document; logs now always go to stderr, and one-shot commands log only warnings by default.
+- **Documented exit codes:** 3 = daemon not running (`status`, `stop`), 4 = invalid or missing configuration, 5 = peer not authorized.
+- **`cross-control identity`** prints this machine's name, fingerprint, machine id and file locations, creating the identity on first use; `created` reports whether anything was generated.
+- **`cross-control config check [PATH]`** validates a configuration file without starting anything (exit 4 if invalid), e.g. for Ansible's `validate:`.
+- **`cross-control service unit | install [--enable] | uninstall`** generates and manages a systemd user unit that runs this binary with the given `--config`; unchanged units are left alone.
+- **`trust add` / `trust remove` are idempotent and report whether they changed anything.**
+- **`[identity] cert` / `key`** use certificates supplied by your own PKI or deployment tooling instead of generating one.
+- See [docs/automation.md](docs/automation.md) for the deployment model and an Ansible example.
+
+### Fixed
+
+- An explicitly given `--config` that does not exist is now an error instead of silently starting with defaults.
+- `status` reads the configuration given with `--config` and finds a configured certificate.
+
 ### Security — dependency advisories
 
 - **Updated dependencies with published RustSec advisories** (lockfile only, semver-compatible). These include remotely triggerable panics, memory exhaustion and a stream-limit bypass in `quinn-proto` (0.11.13 → 0.11.19) and `quinn-udp`; handshake-message, certificate-decompression and secret-leaking `Debug` issues in `rustls` (0.23.36 → 0.23.46); certificate-validation fixes in `rustls-webpki`; and soundness fixes in `tokio` and `anyhow`. Yanked `spin` and `clipboard-win` versions were replaced too.
