@@ -242,3 +242,42 @@ fn json_output_is_not_polluted_by_logs() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     serde_json::from_str::<Value>(&stdout).expect("stdout is pure JSON");
 }
+
+#[test]
+fn doctor_reports_checks_and_fails_only_on_failures() {
+    let home = Home::new("doctor");
+    let peer = cross_control_certgen::generate_certificate("peer").unwrap();
+    let config = home.write(
+        "doctor.toml",
+        "[identity]\nname = \"a\"\n[daemon]\nport = 0\n[input]\nbackend = \"none\"\n\
+         [[screens]]\nname = \"b\"\nposition = \"Right\"\n",
+    );
+
+    // Neighbour "b" is not trusted yet: a warning, not a failure.
+    let doc = home.json(&["doctor", "--config", s(&config)], 0);
+    assert_eq!(doc["ok"], true);
+    let checks = doc["checks"].as_array().unwrap();
+    assert!(checks
+        .iter()
+        .any(|c| c["name"] == "trust" && c["status"] == "warn" && c["fix"].is_string()));
+
+    home.run(&[
+        "trust",
+        "add",
+        "b",
+        &peer.fingerprint,
+        "--config",
+        s(&config),
+    ]);
+    let doc = home.json(&["doctor", "--config", s(&config)], 0);
+    assert!(doc["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["name"] == "trust" && c["status"] == "ok"));
+
+    // An invalid config is a failure: exit 1, ok = false.
+    let bad = home.write("bad.toml", "[identity\n");
+    let doc = home.json(&["doctor", "--config", s(&bad)], 1);
+    assert_eq!(doc["ok"], false);
+}

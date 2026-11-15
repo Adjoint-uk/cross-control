@@ -55,6 +55,10 @@ enum Commands {
     /// Show daemon status and connected machines.
     Status,
 
+    /// Check that this machine is ready (devices, permissions, config,
+    /// trust, port) and explain how to fix what is not. Exit 1 on failure.
+    Doctor,
+
     /// Show this machine's name and certificate fingerprint, creating its
     /// identity (certificate, key, machine id) on first use.
     Identity,
@@ -178,6 +182,7 @@ async fn main() -> ExitCode {
         Commands::Stop => cmd::daemon::stop(&ctx),
         Commands::Status => Ok(cmd::daemon::status(&ctx)),
         Commands::Identity => cmd::identity::show(&ctx),
+        Commands::Doctor => Ok(cmd::doctor::run(&ctx)),
         Commands::Config {
             action: ConfigAction::Check { path },
         } => cmd::config::check(&ctx, path),

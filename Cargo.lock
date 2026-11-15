@@ -369,6 +369,7 @@ dependencies = [
  "cross-control-types",
  "hostname",
  "rustls",
+ "serde",
  "serde_json",
  "tokio",
  "toml",
