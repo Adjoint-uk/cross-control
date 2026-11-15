@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 
+use cross_control_daemon::config::InputBackend;
 use cross_control_daemon::status::{status_file_path, StatusSnapshot};
 use cross_control_daemon::{daemon::Daemon, setup};
 use serde_json::json;
@@ -26,33 +27,8 @@ pub async fn start(ctx: &Ctx) -> anyhow::Result<u8> {
         })?;
     let transport = cross_control_protocol::QuicTransport::bind(bind_addr, &cert_pem, &key_pem)?;
 
-    #[cfg(feature = "linux")]
-    let (capture, emulation, local_devices) = {
-        use cross_control_input::linux::capture::EvdevCapture;
-        use cross_control_input::linux::emulation::UinputEmulation;
+    let (capture, emulation, local_devices) = input_backends(config.input.backend)?;
 
-        let devices: Vec<_> = EvdevCapture::enumerate_devices()
-            .into_iter()
-            .map(|(_, info)| info)
-            .collect();
-        (
-            Box::new(EvdevCapture::new()) as Box<dyn cross_control_input::InputCapture>,
-            Box::new(UinputEmulation::new()) as Box<dyn cross_control_input::InputEmulation>,
-            devices,
-        )
-    };
-
-    #[cfg(not(feature = "linux"))]
-    {
-        let _ = (transport, machine_id);
-        anyhow::bail!(
-            "no input backend available for this platform. \
-             cross-control currently supports Linux only. \
-             Windows support is planned for a future release."
-        );
-    }
-
-    #[cfg(feature = "linux")]
     {
         let mut daemon = Daemon::new(config, machine_id, transport, capture, emulation);
         daemon.set_local_devices(local_devices);
@@ -87,9 +63,60 @@ pub async fn start(ctx: &Ctx) -> anyhow::Result<u8> {
     }
 }
 
+type Backends = (
+    Box<dyn cross_control_input::InputCapture>,
+    Box<dyn cross_control_input::InputEmulation>,
+    Vec<cross_control_types::DeviceInfo>,
+);
+
+/// The input capture/emulation pair (and local devices) for `backend`.
+fn input_backends(backend: InputBackend) -> anyhow::Result<Backends> {
+    use cross_control_input::null::{NullCapture, NullEmulation};
+
+    match backend {
+        InputBackend::None => {
+            tracing::warn!(
+                "input backend is \"none\": this machine neither shares nor receives keyboard and mouse"
+            );
+            Ok((
+                Box::new(NullCapture::default()),
+                Box::new(NullEmulation::default()),
+                Vec::new(),
+            ))
+        }
+        InputBackend::Auto | InputBackend::Evdev => native_backends(),
+    }
+}
+
+#[cfg(feature = "linux")]
+#[allow(clippy::unnecessary_wraps)] // same signature as the fallible non-Linux version
+fn native_backends() -> anyhow::Result<Backends> {
+    use cross_control_input::linux::capture::EvdevCapture;
+    use cross_control_input::linux::emulation::UinputEmulation;
+
+    let devices = EvdevCapture::enumerate_devices()
+        .into_iter()
+        .map(|(_, info)| info)
+        .collect();
+    Ok((
+        Box::new(EvdevCapture::new()),
+        Box::new(UinputEmulation::new()),
+        devices,
+    ))
+}
+
+#[cfg(not(feature = "linux"))]
+fn native_backends() -> anyhow::Result<Backends> {
+    Err(cross_control_daemon::DaemonError::Config(
+        "no native input backend for this platform yet (Linux only); \
+         set [input] backend = \"none\" to run without input"
+            .to_string(),
+    )
+    .into())
+}
+
 /// Resolve when the process is asked to stop (SIGTERM/SIGINT on Unix,
 /// Ctrl+C elsewhere).
-#[cfg(feature = "linux")]
 async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {

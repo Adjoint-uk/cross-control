@@ -1,0 +1,7 @@
+---
+# Deploy cross-control to every host in the `kvm` group. See
+# inventory.example.yml and roles/cross_control/README.md.
+- name: Deploy cross-control
+  hosts: kvm
+  roles:
+    - cross_control

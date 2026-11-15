@@ -1,0 +1,69 @@
+---
+# Binary --------------------------------------------------------------------
+
+# Path on the Ansible controller of a cross-control binary to install. Leave
+# empty if the binary is already installed (package, `cargo install`, image).
+cross_control_binary_src: ""
+# Where the binary lives on the target.
+cross_control_bin: "{{ ansible_env.HOME }}/.local/bin/cross-control"
+
+# Identity and files --------------------------------------------------------
+
+# This machine's name. Peers refer to it by this name in their layout.
+cross_control_name: "{{ inventory_hostname }}"
+# Configuration directory. The default is what the daemon uses on its own;
+# change it only for testing (a systemd service started outside Ansible
+# would not see a non-default location).
+cross_control_config_dir: "{{ ansible_env.HOME }}/.config/cross-control"
+# Certificates from your own PKI (both or neither). When unset, each machine
+# generates its own on first run.
+cross_control_cert: ""
+cross_control_key: ""
+
+# Network -------------------------------------------------------------------
+
+cross_control_port: 24800
+cross_control_bind: "0.0.0.0"
+# mDNS discovery. Peers with an `address` in cross_control_screens are dialed
+# directly either way.
+cross_control_discovery: true
+
+# Layout --------------------------------------------------------------------
+
+# Machines directly next to this one:
+#   - { name: laptop, position: Right, address: "192.0.2.20:24800" }
+# `address` is optional with discovery on.
+cross_control_screens: []
+# Links between other machines, for multi-hop layouts:
+#   - { screen: laptop, neighbor: tablet, position: Right }
+cross_control_screen_adjacency: []
+# This machine's monitors (empty: one 1920x1080 screen):
+#   - { width: 2560, height: 1440, x: 0, y: 0 }
+cross_control_monitors: []
+
+# Input backend: auto | evdev | none ("none" runs headless, e.g. in CI).
+cross_control_input_backend: auto
+cross_control_release_hotkey: [LeftCtrl, LeftShift, Escape]
+
+# Trust ---------------------------------------------------------------------
+
+# Hosts (inventory names) this machine trusts. Their identities are collected
+# by this role, so they must be in the same play. Defaults to every host in
+# the play; this host itself is skipped.
+cross_control_trust_hosts: "{{ ansible_play_hosts_all }}"
+# Additional trusted machines outside the play:
+#   - { name: kiosk, fingerprint: "SHA256:ab:cd:…" }
+cross_control_extra_trusted: []
+# Trust unknown machines on first contact. Leave off: the role distributes
+# trust explicitly.
+cross_control_trust_on_first_use: false
+
+# Service -------------------------------------------------------------------
+
+# Install a systemd user service (Linux).
+cross_control_service: true
+# Enable and start it.
+cross_control_service_enabled: true
+
+# Extra environment for every cross-control command (e.g. RUST_LOG).
+cross_control_environment: {}

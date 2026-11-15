@@ -1,0 +1,84 @@
+---
+# Deploy cross-control: install, create identity, render layout and trust,
+# run as a service. Uses the linear strategy's lock-step: every host has
+# published its identity before any host renders its trust file.
+
+- name: Check variables
+  ansible.builtin.assert:
+    that:
+      - cross_control_input_backend in ['auto', 'evdev', 'none']
+      - (cross_control_cert | length > 0) == (cross_control_key | length > 0)
+      - cross_control_config_dir | basename == 'cross-control'
+    fail_msg: >-
+      cross_control_input_backend must be auto, evdev or none;
+      cross_control_cert / cross_control_key must be set together; and
+      cross_control_config_dir must end in /cross-control (the daemon finds
+      it through XDG_CONFIG_HOME).
+    quiet: true
+
+- name: Install the binary
+  when: cross_control_binary_src | length > 0
+  block:
+    - name: Create the binary directory
+      ansible.builtin.file:
+        path: "{{ cross_control_bin | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy the binary
+      ansible.builtin.copy:
+        src: "{{ cross_control_binary_src }}"
+        dest: "{{ cross_control_bin }}"
+        mode: "0755"
+      notify: Restart cross-control
+
+- name: Create the configuration directory
+  ansible.builtin.file:
+    path: "{{ cross_control_config_dir }}"
+    state: directory
+    mode: "0700"
+
+# The identity (certificate, key, machine id) is created on first run and
+# never replaced; `created` makes the task report a change only then.
+- name: Ensure this machine's identity
+  ansible.builtin.command:
+    argv: ["{{ cross_control_bin }}", identity, --json]
+  environment: "{{ _cross_control_env }}"
+  register: _cross_control_identity_cmd
+  changed_when: (_cross_control_identity_cmd.stdout | from_json).created
+
+- name: Publish the identity to the other hosts
+  ansible.builtin.set_fact:
+    # The configured name, not the one in an existing config (which on the
+    # very first run does not exist yet).
+    cross_control_identity: >-
+      {{ _cross_control_identity_cmd.stdout | from_json
+         | combine({'name': cross_control_name}) }}
+
+- name: Render the layout
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: "{{ cross_control_config_dir }}/config.toml"
+    mode: "0600"
+    validate: "{{ cross_control_bin }} config check %s"
+  environment: "{{ _cross_control_env }}"
+  notify: Restart cross-control
+
+# Authoritative: hosts removed from the inventory stop being trusted. A
+# running daemon reads this file on every connection, so no restart.
+- name: Render the trusted machines
+  ansible.builtin.template:
+    src: known_peers.j2
+    dest: "{{ cross_control_config_dir }}/known_peers"
+    mode: "0600"
+
+- name: Install the systemd user service
+  when: cross_control_service | bool
+  ansible.builtin.command:
+    argv: >-
+      {{ [cross_control_bin, 'service', 'install', '--json',
+          '--config', cross_control_config_dir ~ '/config.toml']
+         + (['--enable'] if cross_control_service_enabled | bool else []) }}
+  environment: "{{ _cross_control_env }}"
+  register: _cross_control_service_cmd
+  changed_when: (_cross_control_service_cmd.stdout | from_json).changed

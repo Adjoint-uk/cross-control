@@ -1,0 +1,6 @@
+---
+# Point the daemon at cross_control_config_dir (it resolves its directory
+# from XDG_CONFIG_HOME), plus any user-supplied environment.
+_cross_control_env: >-
+  {{ {'XDG_CONFIG_HOME': cross_control_config_dir | dirname}
+     | combine(cross_control_environment) }}

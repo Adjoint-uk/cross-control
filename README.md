@@ -266,8 +266,9 @@ See `examples/config.toml` for all configuration options.
 
 Every command takes `--json` and returns meaningful exit codes, and trust can
 be distributed without interactive pairing (`cross-control identity`,
-`trust add`, `config check`, `service install`). See
-[docs/automation.md](docs/automation.md) for an Ansible example.
+`trust add`, `config check`, `service install`). An
+Ansible role lives in [deploy/ansible](deploy/ansible); see
+[docs/automation.md](docs/automation.md).
 
 ## Development Status
 

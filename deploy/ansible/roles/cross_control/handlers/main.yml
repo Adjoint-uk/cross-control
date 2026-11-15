@@ -1,0 +1,7 @@
+---
+# try-restart: restart only if it is running, so a host where the service
+# is installed but deliberately stopped stays stopped.
+- name: Restart cross-control
+  ansible.builtin.command: systemctl --user try-restart cross-control.service
+  when: cross_control_service | bool
+  changed_when: true

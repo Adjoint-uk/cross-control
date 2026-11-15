@@ -59,6 +59,7 @@ fn test_devices() -> Vec<DeviceInfo> {
 fn release_hotkey() -> InputConfig {
     InputConfig {
         release_hotkey: vec!["F12".to_string()],
+        ..InputConfig::default()
     }
 }
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Ansible role and headless mode
+
+- **Ansible role** (`deploy/ansible/roles/cross_control`):
+  - installs the binary and creates each host's identity;
+  - renders a validated `config.toml` from variables;
+  - renders an authoritative `known_peers` from the other hosts' fingerprints, so there is no manual pairing, and hosts dropped from the play lose trust;
+  - manages the systemd user service.
+- **Tested end to end in CI** (`deploy/ansible/tests/run.sh`): two machines are deployed, a re-run must report no changes, the daemons must connect using only the distributed trust, and removing a host must revoke its trust.
+- **`[input] backend = "auto" | "evdev" | "none"`.** `none` runs the daemon headless (discovery, authentication, sessions, clipboard, without touching input devices), for smoke-testing deployments in containers and CI. Non-Linux builds now fail with a clear configuration error unless `none` is chosen.
+
 ### Added — automation-friendly CLI
 
 - **`--json` and `--config` on every command.** With `--json`, stdout is a single JSON document; logs now always go to stderr, and one-shot commands log only warnings by default.

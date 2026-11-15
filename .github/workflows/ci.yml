@@ -52,6 +52,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
 
+  ansible:
+    name: Ansible role (end-to-end)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ansible-core>=2.15,<2.20"
+      - run: cargo build -p cross-control-cli
+      - run: deploy/ansible/tests/run.sh
+
   deny:
     name: Dependencies (cargo-deny)
     runs-on: ubuntu-latest

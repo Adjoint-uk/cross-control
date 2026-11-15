@@ -1,0 +1,5 @@
+---
+- name: Deploy cross-control to the test hosts
+  hosts: kvm
+  roles:
+    - role: cross_control

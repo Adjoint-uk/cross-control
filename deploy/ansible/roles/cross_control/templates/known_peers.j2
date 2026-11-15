@@ -1,0 +1,11 @@
+# Managed by Ansible (cross_control role); changes here will be overwritten.
+# cross-control known peers: <fingerprint> <name>
+{% for host in cross_control_trust_hosts | difference([inventory_hostname]) %}
+{%   set id = hostvars[host].cross_control_identity | default(none) %}
+{%   if id is not none %}
+{{ id.fingerprint }} {{ id.name }}
+{%   endif %}
+{% endfor %}
+{% for peer in cross_control_extra_trusted %}
+{{ peer.fingerprint }} {{ peer.name }}
+{% endfor %}

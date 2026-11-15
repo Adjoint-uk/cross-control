@@ -251,14 +251,34 @@ impl Default for IdentityConfig {
 pub struct InputConfig {
     #[serde(default = "default_release_hotkey")]
     pub release_hotkey: Vec<String>,
+    /// Which input backend to use.
+    #[serde(default)]
+    pub backend: InputBackend,
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
         Self {
             release_hotkey: default_release_hotkey(),
+            backend: InputBackend::default(),
         }
     }
+}
+
+/// Input backend selection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputBackend {
+    /// The platform's native backend (evdev/uinput on Linux).
+    #[default]
+    Auto,
+    /// evdev capture and uinput emulation (Linux).
+    Evdev,
+    /// Touch no input devices: the daemon still connects, authenticates and
+    /// syncs the clipboard, but neither shares nor receives keyboard and
+    /// mouse. For smoke-testing deployments (containers, CI) and headless
+    /// machines.
+    None,
 }
 
 /// Peer authentication settings.
@@ -383,6 +403,14 @@ fn default_screen_height() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_backend_parses_and_defaults_to_auto() {
+        assert_eq!(Config::default().input.backend, InputBackend::Auto);
+        let c: Config = toml::from_str("[input]\nbackend = \"none\"\n").unwrap();
+        assert_eq!(c.input.backend, InputBackend::None);
+        assert!(toml::from_str::<Config>("[input]\nbackend = \"wayland\"\n").is_err());
+    }
 
     #[test]
     fn clipboard_limit_fits_in_one_message() {
