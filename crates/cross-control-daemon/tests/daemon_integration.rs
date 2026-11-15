@@ -3,6 +3,8 @@
 #![allow(clippy::similar_names, clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use cross_control_clipboard::{ClipboardProvider, MockClipboard};
@@ -25,6 +27,7 @@ struct TestPair {
     feed_a: mpsc::Sender<CapturedEvent>,
     emulation_a: MockEmulationHandle,
     clipboard_a: MockClipboard,
+    grabbed_a: Arc<AtomicBool>,
     status_a: watch::Receiver<DaemonStatus>,
     shutdown_a: mpsc::Sender<DaemonEvent>,
 
@@ -129,6 +132,7 @@ async fn setup_pair() -> TestPair {
 
     // Mock backends for A
     let (capture_a, feed_a) = MockCapture::new();
+    let grabbed_a = capture_a.grabbed_flag();
     let emulation_a_backend = MockEmulation::new();
     let emulation_a = emulation_a_backend.handle();
 
@@ -185,6 +189,7 @@ async fn setup_pair() -> TestPair {
         feed_a,
         emulation_a,
         clipboard_a,
+        grabbed_a,
         status_a,
         shutdown_a,
         feed_b,
@@ -1141,4 +1146,278 @@ async fn test_clipboard_image_syncs_on_control_handoff() {
     assert_eq!(got.as_deref(), Some(png_bytes.as_slice()));
 
     pair.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Hand-off hardening: grab, stuck keys, held-key gating, tie-break, exit edges
+// ---------------------------------------------------------------------------
+
+fn key(code: KeyCode, state: ButtonState) -> CapturedEvent {
+    CapturedEvent {
+        device_id: DeviceId(1),
+        timestamp_us: 2000,
+        event: InputEvent::Key { code, state },
+    }
+}
+
+fn mouse(dx: i32, dy: i32) -> CapturedEvent {
+    CapturedEvent {
+        device_id: DeviceId(2),
+        timestamp_us: 1000,
+        event: InputEvent::MouseMove { dx, dy },
+    }
+}
+
+async fn press_release_hotkey(feed: &mpsc::Sender<CapturedEvent>) {
+    for code in [KeyCode::LeftCtrl, KeyCode::LeftShift, KeyCode::Escape] {
+        feed.send(key(code, ButtonState::Pressed)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for code in [KeyCode::Escape, KeyCode::LeftShift, KeyCode::LeftCtrl] {
+        feed.send(key(code, ButtonState::Released)).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_local_input_grabbed_while_controlling() {
+    let mut pair = setup_pair().await;
+    drive_to_controlling(&mut pair).await;
+    // EnterAck grabs the devices before the status broadcast.
+    assert!(
+        pair.grabbed_a.load(Ordering::SeqCst),
+        "local devices must be grabbed while controlling a remote"
+    );
+
+    press_release_hotkey(&pair.feed_a).await;
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.controlling.is_none()
+    })
+    .await
+    .expect("hotkey should release control");
+    assert!(
+        !pair.grabbed_a.load(Ordering::SeqCst),
+        "local devices must be released when control returns"
+    );
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.controlled_by.is_none()
+    })
+    .await
+    .expect("B should stop being controlled after release");
+
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_injected_keys_released_when_control_leaves() {
+    let mut pair = setup_pair().await;
+    drive_to_controlling(&mut pair).await;
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.controlled_by.is_some()
+    })
+    .await
+    .expect("B controlled");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Hold KeyB on the remote, then take control back without releasing it.
+    pair.feed_a
+        .send(key(KeyCode::KeyB, ButtonState::Pressed))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if pair.emulation_b.injected_events().iter().any(|e| {
+                matches!(
+                    e.event,
+                    InputEvent::Key {
+                        code: KeyCode::KeyB,
+                        state: ButtonState::Pressed
+                    }
+                )
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("B should see KeyB pressed");
+
+    press_release_hotkey(&pair.feed_a).await;
+
+    // B must release everything it injected: KeyB, plus the Ctrl/Shift of
+    // the hotkey that reached it before the combination completed.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = pair.emulation_b.injected_events();
+            let released = |code| {
+                events.iter().any(|e| {
+                    matches!(e.event, InputEvent::Key { code: c, state: ButtonState::Released } if c == code)
+                })
+            };
+            if released(KeyCode::KeyB) && released(KeyCode::LeftCtrl) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("B should release keys still held when control left");
+
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_no_crossing_while_key_held() {
+    let mut pair = setup_pair().await;
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake A");
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake B");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    pair.feed_a
+        .send(key(KeyCode::KeyA, ButtonState::Pressed))
+        .await
+        .unwrap();
+    for _ in 0..5 {
+        pair.feed_a.send(mouse(500, 0)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        pair.status_a.borrow().controlling.is_none(),
+        "must not cross while a key is held"
+    );
+
+    pair.feed_a
+        .send(key(KeyCode::KeyA, ButtonState::Released))
+        .await
+        .unwrap();
+    pair.feed_a.send(mouse(10, 0)).await.unwrap();
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("crossing should proceed once the key is released");
+
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_simultaneous_crossing_resolves_to_one_direction() {
+    let mut pair = setup_pair().await;
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake A");
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake B");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Both users push toward each other at the same moment.
+    for _ in 0..5 {
+        pair.feed_a.send(mouse(500, 0)).await.unwrap();
+        pair.feed_b.send(mouse(-500, 0)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let (a, b) = (
+        pair.status_a.borrow().clone(),
+        pair.status_b.borrow().clone(),
+    );
+    let a_wins = a.controlling.is_some() && b.controlled_by.is_some();
+    let b_wins = b.controlling.is_some() && a.controlled_by.is_some();
+    assert!(
+        a_wins ^ b_wins,
+        "exactly one direction must win: a={a:?} b={b:?}"
+    );
+
+    // The loser must not be stuck: release, then the loser can cross.
+    let (winner_feed, loser_feed, loser_dx) = if a_wins {
+        (pair.feed_a.clone(), pair.feed_b.clone(), -500)
+    } else {
+        (pair.feed_b.clone(), pair.feed_a.clone(), 500)
+    };
+    press_release_hotkey(&winner_feed).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await; // past the cool-down
+    for _ in 0..5 {
+        loser_feed.send(mouse(loser_dx, 0)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let loser_status = if a_wins {
+        &mut pair.status_b
+    } else {
+        &mut pair.status_a
+    };
+    wait_for_status(loser_status, Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("the losing side must be able to cross afterwards");
+
+    pair.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_leave_works_without_receiver_screen_config() {
+    // The receiver has no [[screens]] at all; the controller's Enter tells it
+    // which of its edges lead somewhere.
+    let mut cluster = setup_cluster(2, |addrs| {
+        vec![
+            DaemonSpec {
+                name: "ctl".to_string(),
+                screens: vec![ScreenConfig {
+                    name: "rcv".to_string(),
+                    address: Some(addrs[1].to_string()),
+                    position: Position::Right,
+                    fingerprint: None,
+                }],
+                screen_adjacency: vec![],
+            },
+            DaemonSpec {
+                name: "rcv".to_string(),
+                screens: vec![],
+                screen_adjacency: vec![],
+            },
+        ]
+    })
+    .await;
+
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    cluster.push_cursor_to_edge(0, 500, 0).await;
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("ctl should control rcv");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Move off the entry edge, then back left across it.
+    cluster.feeds[0].send(mouse(300, 0)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    cluster.push_cursor_to_edge(0, -500, 0).await;
+    wait_for_status(&mut cluster.statuses[0], Duration::from_secs(5), |s| {
+        s.controlling.is_none()
+    })
+    .await
+    .expect("rcv should send Leave at its left edge even without config");
+
+    cluster.shutdown().await;
 }

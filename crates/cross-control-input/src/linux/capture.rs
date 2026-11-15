@@ -20,18 +20,26 @@ use crate::InputCapture;
 /// Linux input capture using evdev.
 ///
 /// Reads events from `/dev/input/event*` devices passively (no exclusive grab
-/// by default). The daemon calls [`grab`] when switching to remote control
-/// and [`release`] when returning.
+/// by default). The daemon calls [`InputCapture::grab`] when it starts
+/// controlling a remote, so local applications stop seeing the input, and
+/// [`InputCapture::release`] when control returns.
+///
+/// An exclusive grab (`EVIOCGRAB`) belongs to a file descriptor, so it must be
+/// taken on the descriptor each reader task is reading from — grabbing a
+/// freshly opened descriptor would be released the moment it was dropped. The
+/// reader tasks therefore watch `grab_tx` and grab or ungrab their own device.
+/// If the daemon dies, the descriptors close and the kernel drops the grab, so
+/// a crash cannot leave the keyboard captured.
 pub struct EvdevCapture {
     devices: HashMap<DeviceId, DeviceEntry>,
     barriers: HashMap<BarrierId, Barrier>,
     next_barrier_id: u32,
     task: Option<JoinHandle<()>>,
     shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    grab_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 struct DeviceEntry {
-    path: PathBuf,
     #[allow(dead_code)]
     info: DeviceInfo,
 }
@@ -50,6 +58,7 @@ impl EvdevCapture {
             next_barrier_id: 1,
             task: None,
             shutdown_tx: None,
+            grab_tx: None,
         }
     }
 
@@ -114,17 +123,12 @@ impl EvdevCapture {
         result
     }
 
-    /// Grab all tracked devices exclusively (prevents local desktop from receiving input).
-    pub fn grab(&mut self) -> Result<(), InputError> {
-        for entry in self.devices.values() {
-            if let Ok(mut device) = Device::open(&entry.path) {
-                device
-                    .grab()
-                    .map_err(|e| InputError::DeviceGrab(e.to_string()))?;
-            }
+    /// Tell every reader task to grab (`true`) or ungrab (`false`) its device.
+    fn set_grab(&self, grab: bool) {
+        if let Some(tx) = &self.grab_tx {
+            // send_replace never fails, even with no receivers left.
+            tx.send_replace(grab);
         }
-        info!("grabbed all input devices");
-        Ok(())
     }
 }
 
@@ -139,16 +143,13 @@ impl InputCapture for EvdevCapture {
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         self.shutdown_tx = Some(shutdown_tx);
+        let (grab_tx, grab_rx) = tokio::sync::watch::channel(false);
+        self.grab_tx = Some(grab_tx);
 
         for (path, info) in &device_list {
             info!(device = %info.name, path = %path.display(), "tracking device");
-            self.devices.insert(
-                info.id,
-                DeviceEntry {
-                    path: path.clone(),
-                    info: info.clone(),
-                },
-            );
+            self.devices
+                .insert(info.id, DeviceEntry { info: info.clone() });
         }
 
         // Spawn reader tasks for each device
@@ -157,6 +158,7 @@ impl InputCapture for EvdevCapture {
             let tx = tx.clone();
             let device_id = info.id;
             let mut shutdown_rx = shutdown_rx.clone();
+            let mut grab_rx = grab_rx.clone();
 
             let handle: JoinHandle<()> = tokio::spawn(async move {
                 let device = match Device::open(&path) {
@@ -178,6 +180,21 @@ impl InputCapture for EvdevCapture {
                     tokio::select! {
                         _ = shutdown_rx.changed() => {
                             break;
+                        }
+                        changed = grab_rx.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                            let want = *grab_rx.borrow_and_update();
+                            let result = if want {
+                                stream.device_mut().grab()
+                            } else {
+                                stream.device_mut().ungrab()
+                            };
+                            match result {
+                                Ok(()) => debug!(path = %path.display(), grabbed = want, "device grab changed"),
+                                Err(e) => warn!(path = %path.display(), error = %e, grab = want, "device grab failed"),
+                            }
                         }
                         result = stream.next_event() => {
                             match result {
@@ -232,14 +249,15 @@ impl InputCapture for EvdevCapture {
         Ok(())
     }
 
+    async fn grab(&mut self) -> Result<(), InputError> {
+        self.set_grab(true);
+        info!("grabbing input devices for remote control");
+        Ok(())
+    }
+
     async fn release(&mut self) -> Result<(), InputError> {
-        // Re-open devices without grab to release exclusive access
-        for entry in self.devices.values() {
-            if let Ok(mut device) = Device::open(&entry.path) {
-                let _ = device.ungrab();
-            }
-        }
-        info!("released all input devices");
+        self.set_grab(false);
+        info!("released input devices");
         Ok(())
     }
 

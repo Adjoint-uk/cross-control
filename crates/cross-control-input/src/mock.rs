@@ -26,6 +26,7 @@ pub struct MockCapture {
     feed_rx: Option<mpsc::Receiver<CapturedEvent>>,
     barriers: Arc<Mutex<HashMap<BarrierId, Barrier>>>,
     released: Arc<AtomicBool>,
+    grabbed: Arc<AtomicBool>,
     next_barrier: AtomicU32,
     shutdown: Arc<AtomicBool>,
 }
@@ -38,6 +39,7 @@ impl MockCapture {
             feed_rx: Some(feed_rx),
             barriers: Arc::new(Mutex::new(HashMap::new())),
             released: Arc::new(AtomicBool::new(false)),
+            grabbed: Arc::new(AtomicBool::new(false)),
             next_barrier: AtomicU32::new(1),
             shutdown: Arc::new(AtomicBool::new(false)),
         };
@@ -47,6 +49,12 @@ impl MockCapture {
     /// Check if `release()` was called.
     pub fn was_released(&self) -> bool {
         self.released.load(Ordering::SeqCst)
+    }
+
+    /// A shared flag that is `true` while the capture is grabbed. Clone it
+    /// before handing the capture to a daemon to observe grab/release.
+    pub fn grabbed_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.grabbed)
     }
 }
 
@@ -88,7 +96,13 @@ impl InputCapture for MockCapture {
         Ok(())
     }
 
+    async fn grab(&mut self) -> Result<(), InputError> {
+        self.grabbed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
     async fn release(&mut self) -> Result<(), InputError> {
+        self.grabbed.store(false, Ordering::SeqCst);
         self.released.store(true, Ordering::SeqCst);
         Ok(())
     }

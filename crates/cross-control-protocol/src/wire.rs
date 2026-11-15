@@ -7,15 +7,27 @@ use bincode::{Decode, Encode};
 
 use crate::error::ProtocolError;
 
-/// Maximum message size (1 MiB). Prevents allocation bombs.
+/// Maximum message size (1 MiB). Frames longer than this are rejected before
+/// they are read.
 pub const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
+
+/// [`MAX_MESSAGE_SIZE`] as a `usize`, for bincode's decode limit.
+const MAX_MESSAGE_BYTES: usize = MAX_MESSAGE_SIZE as usize;
+
+/// The bincode configuration for every message on the wire.
+///
+/// The limit matters on decode: bincode otherwise trusts the length a peer
+/// claims for a `String` or `Vec` and tries to allocate it up front, so a
+/// ten-byte frame claiming a terabyte-long string aborts the process. With a
+/// limit, each claimed length is checked against the budget before anything is
+/// allocated. The limit does not change the encoding.
+fn wire_config() -> impl bincode::config::Config {
+    bincode::config::standard().with_limit::<MAX_MESSAGE_BYTES>()
+}
 
 /// Encode a message to a length-prefixed byte vector.
 pub fn encode_message<T: Encode>(msg: &T) -> Result<Vec<u8>, ProtocolError> {
-    let config = bincode::config::standard();
-    let payload = bincode::encode_to_vec(msg, config)
-        .map_err(|e| ProtocolError::Serialization(e.to_string()))?;
-
+    let payload = encode_payload(msg)?;
     let len = u32::try_from(payload.len())
         .map_err(|_| ProtocolError::Serialization("message too large".to_string()))?;
 
@@ -25,10 +37,18 @@ pub fn encode_message<T: Encode>(msg: &T) -> Result<Vec<u8>, ProtocolError> {
     Ok(buf)
 }
 
+/// Encode a message payload (without the length prefix).
+pub(crate) fn encode_payload<T: Encode>(msg: &T) -> Result<Vec<u8>, ProtocolError> {
+    bincode::encode_to_vec(msg, wire_config())
+        .map_err(|e| ProtocolError::Serialization(e.to_string()))
+}
+
 /// Decode a message from a bincode v2 payload (without the length prefix).
+///
+/// Safe on untrusted input: claimed lengths are bounded by
+/// [`MAX_MESSAGE_SIZE`] before any allocation.
 pub fn decode_message<T: Decode<()>>(payload: &[u8]) -> Result<T, ProtocolError> {
-    let config = bincode::config::standard();
-    let (msg, _) = bincode::decode_from_slice(payload, config)
+    let (msg, _) = bincode::decode_from_slice(payload, wire_config())
         .map_err(|e| ProtocolError::Deserialization(e.to_string()))?;
     Ok(msg)
 }
@@ -73,5 +93,35 @@ mod tests {
             Message::Control(ControlMessage::Ping { seq }) => assert_eq!(seq, 12345),
             _ => panic!("unexpected message type"),
         }
+    }
+
+    /// bincode's varint encoding of a u64 length: a 0xFD marker, then 8 bytes LE.
+    fn hostile_len_prefix(claimed: u64) -> Vec<u8> {
+        let mut v = vec![0xFD];
+        v.extend_from_slice(&claimed.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn hostile_string_length_is_rejected_not_allocated() {
+        // A ~10-byte frame claiming a 1 TiB string. Without a decode limit,
+        // bincode tries to allocate it and the process aborts.
+        let payload = hostile_len_prefix(1 << 40);
+        let result: Result<String, _> = decode_message(&payload);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn hostile_vec_length_is_rejected_not_allocated() {
+        let payload = hostile_len_prefix(1 << 40);
+        let result: Result<Vec<u64>, _> = decode_message(&payload);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn length_just_over_the_limit_is_rejected() {
+        let payload = hostile_len_prefix(u64::from(MAX_MESSAGE_SIZE) + 1);
+        let result: Result<Vec<u8>, _> = decode_message(&payload);
+        assert!(result.is_err());
     }
 }
