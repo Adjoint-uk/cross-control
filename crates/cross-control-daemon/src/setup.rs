@@ -145,19 +145,39 @@ pub fn load_or_create_machine_id(config_dir: &Path) -> Result<MachineId, DaemonE
     }
 }
 
-/// Get the default config directory path.
+/// Overrides [`config_dir`] when set (any platform).
+pub const CONFIG_DIR_ENV: &str = "CROSS_CONTROL_CONFIG_DIR";
+/// Overrides [`runtime_dir`] when set (any platform).
+pub const RUNTIME_DIR_ENV: &str = "CROSS_CONTROL_RUNTIME_DIR";
+
+fn dir_from_env(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The configuration directory: `$CROSS_CONTROL_CONFIG_DIR` if set, else
+/// `cross-control` in the platform's configuration directory
+/// (`~/.config` on Linux, `%APPDATA%` on Windows).
 pub fn config_dir() -> PathBuf {
+    if let Some(dir) = dir_from_env(CONFIG_DIR_ENV) {
+        return dir;
+    }
     dirs::config_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("cross-control")
 }
 
-/// Directory for the PID and status files: the per-user runtime directory
+/// Directory for the PID and status files: `$CROSS_CONTROL_RUNTIME_DIR` if
+/// set, else the per-user runtime directory
 /// (`$XDG_RUNTIME_DIR`), else the per-user state directory, else the config
 /// directory. Never a shared directory such as `/tmp`, where another user
 /// could plant or read the files.
 pub fn runtime_dir() -> PathBuf {
+    if let Some(dir) = dir_from_env(RUNTIME_DIR_ENV) {
+        return dir;
+    }
     dirs::runtime_dir()
         .or_else(|| dirs::state_dir().map(|dir| dir.join("cross-control")))
         .unwrap_or_else(config_dir)

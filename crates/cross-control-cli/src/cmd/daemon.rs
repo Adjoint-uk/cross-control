@@ -88,7 +88,7 @@ fn input_backends(backend: InputBackend) -> anyhow::Result<Backends> {
     }
 }
 
-#[cfg(feature = "linux")]
+#[cfg(all(feature = "linux", target_os = "linux"))]
 #[allow(clippy::unnecessary_wraps)] // same signature as the fallible non-Linux version
 fn native_backends() -> anyhow::Result<Backends> {
     use cross_control_input::linux::capture::EvdevCapture;
@@ -105,7 +105,7 @@ fn native_backends() -> anyhow::Result<Backends> {
     ))
 }
 
-#[cfg(not(feature = "linux"))]
+#[cfg(not(all(feature = "linux", target_os = "linux")))]
 fn native_backends() -> anyhow::Result<Backends> {
     Err(cross_control_daemon::DaemonError::Config(
         "no native input backend for this platform yet (Linux only); \

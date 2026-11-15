@@ -27,6 +27,14 @@ A deployment is therefore:
 
 Every step is idempotent: re-running it changes nothing, and reports that.
 
+### Directory overrides
+
+`CROSS_CONTROL_CONFIG_DIR` and `CROSS_CONTROL_RUNTIME_DIR` replace the
+configuration directory (identity, `config.toml`, `known_peers`) and the
+runtime directory (PID and status files) on every platform. `service
+install` copies them into the generated unit, so the service uses the same
+identity and trust store that was configured.
+
 ## Command reference for automation
 
 All commands accept `--config PATH` and `--json`. With `--json`, stdout is

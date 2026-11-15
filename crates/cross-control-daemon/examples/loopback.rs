@@ -60,7 +60,7 @@ enum EmulationB {
     Mock(MockEmulationHandle),
     /// Real uinput backend — visible on screen but not inspectable here.
     /// Only constructed when built with `--features linux`.
-    #[cfg_attr(not(feature = "linux"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "linux", target_os = "linux")), allow(dead_code))]
     Real,
 }
 
@@ -69,13 +69,13 @@ enum EmulationB {
 /// can assert against.
 fn build_emulation_b(real: bool) -> (Box<dyn InputEmulation>, EmulationB) {
     if real {
-        #[cfg(feature = "linux")]
+        #[cfg(all(feature = "linux", target_os = "linux"))]
         {
             let emu = cross_control_input::linux::emulation::UinputEmulation::new();
             println!("machine-B: using REAL uinput emulation — watch your cursor.");
             return (Box::new(emu), EmulationB::Real);
         }
-        #[cfg(not(feature = "linux"))]
+        #[cfg(not(all(feature = "linux", target_os = "linux")))]
         {
             eprintln!("note: --real needs `--features linux`; falling back to the mock backend.\n");
         }

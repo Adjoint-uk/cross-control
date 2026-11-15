@@ -36,7 +36,8 @@ playbook() {
 # cc HOST ARGS... — run the deployed binary as HOST.
 cc() {
   local host="$1"; shift
-  XDG_CONFIG_HOME="$CC_TEST_ROOT/$host/config" XDG_RUNTIME_DIR="$CC_TEST_ROOT/$host/run" \
+  CROSS_CONTROL_CONFIG_DIR="$CC_TEST_ROOT/$host/config/cross-control" \
+  CROSS_CONTROL_RUNTIME_DIR="$CC_TEST_ROOT/$host/run" \
     "$CC_TEST_ROOT/$host/bin/cross-control" "$@"
 }
 

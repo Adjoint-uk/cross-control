@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 pub mod error;
 
-#[cfg(feature = "linux")]
+#[cfg(all(feature = "linux", target_os = "linux"))]
 pub mod linux;
 
 #[cfg(any(test, feature = "mock"))]
