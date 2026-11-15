@@ -1,0 +1,20 @@
+---
+# Two machines side by side: workstation (left) and laptop (right).
+all:
+  children:
+    kvm:
+      vars:
+        # Built with `cargo build --release -p cross-control-cli`; leave
+        # empty if the binary is installed by other means.
+        cross_control_binary_src: ../../target/release/cross-control
+      hosts:
+        workstation:
+          ansible_host: 192.0.2.10
+          cross_control_screens:
+            - { name: laptop, position: Right, address: "192.0.2.20:24800" }
+          cross_control_monitors:
+            - { width: 2560, height: 1440 }
+        laptop:
+          ansible_host: 192.0.2.20
+          cross_control_screens:
+            - { name: workstation, position: Left, address: "192.0.2.10:24800" }

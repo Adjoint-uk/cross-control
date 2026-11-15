@@ -88,6 +88,14 @@ only if it changed (`{"changed": …}`); `--enable` also runs
 `systemctl --user enable --now`. To manage the unit yourself, template the
 output of `service unit`.
 
+## Headless smoke tests
+
+`[input] backend = "none"` runs the daemon without touching input devices:
+it still discovers, authenticates and keeps sessions with its peers, so a
+deployment can be verified in containers or CI where no keyboard, mouse or
+`/dev/uinput` exists. `cross-control status --json` then lists the connected
+peers.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -99,7 +107,18 @@ output of `service unit`.
 | 4 | invalid or missing configuration |
 | 5 | peer not authorized |
 
+## Ansible role
+
+A ready-made role lives in [`deploy/ansible`](../deploy/ansible): it
+installs the binary, creates identities, renders the layout and an
+authoritative `known_peers` from the other hosts' fingerprints, and manages
+the service. It is tested end to end in CI (two machines deployed, re-run
+idempotently, connected, one removed). See its
+[README](../deploy/ansible/roles/cross_control/README.md).
+
 ## Ansible sketch
+
+The role boils down to roughly this:
 
 ```yaml
 - name: Collect identities

@@ -1,0 +1,30 @@
+---
+# Two "machines" on this host, each with its own directories and port, so
+# the role can be exercised end to end without VMs. Run via tests/run.sh,
+# which sets CC_TEST_ROOT and CC_BINARY.
+all:
+  children:
+    kvm:
+      vars:
+        ansible_connection: local
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+        cc_root: "{{ lookup('env', 'CC_TEST_ROOT') }}/{{ inventory_hostname }}"
+        cross_control_binary_src: "{{ lookup('env', 'CC_BINARY') }}"
+        cross_control_bin: "{{ cc_root }}/bin/cross-control"
+        cross_control_config_dir: "{{ cc_root }}/config/cross-control"
+        cross_control_discovery: false
+        cross_control_input_backend: none
+        cross_control_service: false
+        cross_control_environment:
+          XDG_RUNTIME_DIR: "{{ cc_root }}/run"
+      hosts:
+        left:
+          cross_control_port: 24911
+          cross_control_bind: 127.0.0.1
+          cross_control_screens:
+            - { name: right, position: Right, address: "127.0.0.1:24912" }
+        right:
+          cross_control_port: 24912
+          cross_control_bind: 127.0.0.1
+          cross_control_screens:
+            - { name: left, position: Left, address: "127.0.0.1:24911" }

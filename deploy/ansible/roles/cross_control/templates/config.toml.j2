@@ -1,0 +1,45 @@
+# Managed by Ansible (cross_control role); changes here will be overwritten.
+
+[identity]
+name = {{ cross_control_name | to_json }}
+{% if cross_control_cert | length > 0 %}
+cert = {{ cross_control_cert | to_json }}
+key = {{ cross_control_key | to_json }}
+{% endif %}
+
+[daemon]
+port = {{ cross_control_port | int }}
+bind = {{ cross_control_bind | to_json }}
+discovery = {{ cross_control_discovery | bool | lower }}
+
+[input]
+backend = {{ cross_control_input_backend | to_json }}
+release_hotkey = {{ cross_control_release_hotkey | to_json }}
+
+[security]
+trust_on_first_use = {{ cross_control_trust_on_first_use | bool | lower }}
+known_peers = {{ (cross_control_config_dir ~ '/known_peers') | to_json }}
+{% for monitor in cross_control_monitors %}
+
+[[monitors]]
+width = {{ monitor.width | int }}
+height = {{ monitor.height | int }}
+x = {{ monitor.x | default(0) | int }}
+y = {{ monitor.y | default(0) | int }}
+{% endfor %}
+{% for screen in cross_control_screens %}
+
+[[screens]]
+name = {{ screen.name | to_json }}
+position = {{ screen.position | to_json }}
+{% if screen.address is defined %}
+address = {{ screen.address | to_json }}
+{% endif %}
+{% endfor %}
+{% for link in cross_control_screen_adjacency %}
+
+[[screen_adjacency]]
+screen = {{ link.screen | to_json }}
+neighbor = {{ link.neighbor | to_json }}
+position = {{ link.position | to_json }}
+{% endfor %}

@@ -17,6 +17,9 @@ name = "workstation-left"
 [input]
 # Hotkey to release all grabbed devices and return control to local machine.
 release_hotkey = ["LeftCtrl", "LeftShift", "Escape"]
+# Input backend: "auto" (native: evdev/uinput on Linux), "evdev", or "none"
+# (headless: no input devices touched; for smoke tests and CI).
+# backend = "auto"
 
 [clipboard]
 enabled = true
