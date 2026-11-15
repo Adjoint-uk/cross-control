@@ -11,11 +11,21 @@ use crate::config::Config;
 use crate::error::DaemonError;
 
 /// Load configuration from the given path, or the default location.
+///
+/// A missing file at the default location means "use defaults"; a missing
+/// file at an explicitly given path is an error, so a typo in a service
+/// definition cannot silently start the daemon with an empty layout.
 pub fn load_config(path: Option<&str>) -> Result<Config, DaemonError> {
     let config_path = match path {
         Some(p) => PathBuf::from(p),
         None => default_config_path(),
     };
+    if path.is_some() && !config_path.exists() {
+        return Err(DaemonError::Config(format!(
+            "config file {} not found",
+            config_path.display()
+        )));
+    }
 
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
@@ -31,6 +41,43 @@ pub fn load_config(path: Option<&str>) -> Result<Config, DaemonError> {
         info!("no config file found, using defaults");
         Ok(Config::default())
     }
+}
+
+/// This machine's TLS certificate and key (PEM): the files named by
+/// `identity.cert` / `identity.key` when set — which must then exist — or
+/// else the pair in `config_dir`, generated on first use.
+pub fn load_identity_certs(
+    config: &Config,
+    config_dir: &Path,
+) -> Result<(String, String), DaemonError> {
+    match (&config.identity.cert, &config.identity.key) {
+        (Some(cert_path), Some(key_path)) => {
+            restrict_to_owner(key_path);
+            let read = |path: &Path, what: &str| {
+                std::fs::read_to_string(path).map_err(|e| {
+                    DaemonError::Config(format!("failed to read {what} {}: {e}", path.display()))
+                })
+            };
+            let cert_pem = read(cert_path, "identity.cert")?;
+            let key_pem = read(key_path, "identity.key")?;
+            info!(path = %cert_path.display(), "loaded configured TLS cert");
+            Ok((cert_pem, key_pem))
+        }
+        (None, None) => load_or_generate_certs(config_dir),
+        _ => Err(DaemonError::Config(
+            "identity.cert and identity.key must be set together".to_string(),
+        )),
+    }
+}
+
+/// Where this machine's certificate lives (see [`load_identity_certs`]).
+#[must_use]
+pub fn identity_cert_path(config: &Config, config_dir: &Path) -> PathBuf {
+    config
+        .identity
+        .cert
+        .clone()
+        .unwrap_or_else(|| config_dir.join("cross-control.crt"))
 }
 
 /// Load TLS cert and key from the config directory, or generate if missing.
@@ -173,7 +220,8 @@ fn restrict_to_owner(path: &Path) {
 }
 
 /// Get the default config file path.
-fn default_config_path() -> PathBuf {
+#[must_use]
+pub fn default_config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 

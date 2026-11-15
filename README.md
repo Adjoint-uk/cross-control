@@ -98,7 +98,7 @@ Start the daemon on both machines (`cross-control start`), then show the
 laptop's fingerprint on the laptop:
 
 ```bash
-cross-control trust          # prints this machine's name and fingerprint
+cross-control identity       # prints this machine's name and fingerprint
 ```
 
 On the workstation, pair with it and check the fingerprint matches:
@@ -261,6 +261,13 @@ position = "Right"
 ```
 
 See `examples/config.toml` for all configuration options.
+
+### Automated deployment
+
+Every command takes `--json` and returns meaningful exit codes, and trust can
+be distributed without interactive pairing (`cross-control identity`,
+`trust add`, `config check`, `service install`). See
+[docs/automation.md](docs/automation.md) for an Ansible example.
 
 ## Development Status
 

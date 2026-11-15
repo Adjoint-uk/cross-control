@@ -92,7 +92,7 @@ The fastest way to get two machines talking. Skip if your network blocks mDNS â€
 
 ```bash
 cargo install --path crates/cross-control-cli
-cross-control trust      # creates this machine's certificate and prints its fingerprint
+cross-control identity   # creates this machine's certificate and prints its fingerprint
 ```
 
 Write down the SHA-256 fingerprint each machine prints. You will compare them in step 4 below.

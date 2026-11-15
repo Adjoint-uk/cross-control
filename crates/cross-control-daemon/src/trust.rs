@@ -237,10 +237,21 @@ impl TrustStore {
 
 /// Trust `name` with `fingerprint` in the `known_peers` file at `path`,
 /// replacing any fingerprint previously recorded for that name.
-pub fn add_known_peer(path: &Path, name: &str, fingerprint: &str) -> Result<(), TrustError> {
+///
+/// Returns whether the file changed: `false` when `name` was already trusted
+/// with exactly this fingerprint (nothing is written), so configuration
+/// management can report an accurate "changed" state.
+pub fn add_known_peer(path: &Path, name: &str, fingerprint: &str) -> Result<bool, TrustError> {
     validate_name(name)?;
     let fp = parse_fingerprint(fingerprint)?;
-    write_entry(path, name, &fp)
+    let entries = read_known_peers(path)?;
+    let already = entries.iter().any(|(n, f)| n == name && *f == fp)
+        && entries.iter().filter(|(n, _)| n == name).count() == 1;
+    if already {
+        return Ok(false);
+    }
+    write_entry(path, name, &fp)?;
+    Ok(true)
 }
 
 /// Remove every entry for `name` from the `known_peers` file. Returns
@@ -468,9 +479,13 @@ mod tests {
     fn add_replaces_and_remove_deletes() {
         let dir = tempdir();
         let path = dir.path().join("sub/known_peers");
-        add_known_peer(&path, "bob", FP_A).unwrap();
-        add_known_peer(&path, "bob", FP_B).unwrap();
-        add_known_peer(&path, "carol", FP_A).unwrap();
+        assert!(add_known_peer(&path, "bob", FP_A).unwrap());
+        assert!(
+            !add_known_peer(&path, "bob", FP_A).unwrap(),
+            "re-adding the same entry is a no-op"
+        );
+        assert!(add_known_peer(&path, "bob", FP_B).unwrap());
+        assert!(add_known_peer(&path, "carol", FP_A).unwrap());
         let s = store(dir.path().join("sub").as_path(), false, &[]);
         let entries = s.entries().unwrap();
         assert_eq!(entries.len(), 2);
