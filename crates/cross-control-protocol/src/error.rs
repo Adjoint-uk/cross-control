@@ -22,6 +22,9 @@ pub enum ProtocolError {
     #[error("stream closed unexpectedly")]
     StreamClosed,
 
+    #[error("peer is not reading; send queue full")]
+    Backpressure,
+
     #[error("TLS error: {0}")]
     Tls(String),
 

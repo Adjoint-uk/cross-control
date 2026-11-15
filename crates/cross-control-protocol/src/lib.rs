@@ -10,6 +10,6 @@ pub mod tls;
 pub mod transport;
 pub mod wire;
 
-pub use connection::{MessageReceiver, MessageSender, PeerConnection};
+pub use connection::{MessageReceiver, MessageSender, PeerConnection, QueuedSender};
 pub use error::ProtocolError;
-pub use transport::QuicTransport;
+pub use transport::{Incoming, QuicTransport};

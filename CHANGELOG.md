@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — robustness
+
+- **A stalled peer can no longer freeze the daemon.** Control and input messages are queued to per-stream writer tasks (`QueuedSender`) instead of being written from the event loop. A full queue reports backpressure: input stops being forwarded (control returns to the local machine), and a peer whose control queue stays full for a ping interval is disconnected.
+- **Inbound connections cannot stall the accept loop.** The TLS handshake now runs in a per-connection task (`QuicTransport::accept_incoming` / `Incoming`). At most 16 handshakes run at once; further attempts are refused before any cryptographic work. Every handshake, inbound or outbound, must finish within 10 s.
+- **Configured peers are redialed.** A peer with a configured `address` is dialed until a session exists and again after it drops, with exponential backoff (1 s doubling to 60 s). Trusting a peer while the daemons run no longer needs a restart.
+- **Device limits.** A peer can create at most 16 virtual devices; re-announcing a device id replaces its device instead of leaking the old one; `DeviceGone` releases held keys before destroying the device.
+- **Clipboard size matches the wire.** `clipboard.max_size` defaults to, and is capped at, what one protocol message can carry (~1 MiB; previously 10 MiB, which could never be sent). The offer no longer reads the whole clipboard just to report its size.
+- **Private files are private.** The TLS private key, machine id, PID and status files are written atomically with mode 0600 in 0700 directories; a world-readable key from an earlier version is tightened on load. The PID and status files no longer fall back to the shared `/tmp`, and the status file is written off the async runtime.
+
 ### Security — mutual authentication and explicit peer trust
 
 **Breaking:** peers are now refused unless trusted. After upgrading, pair your machines once (`cross-control pair`) or pin fingerprints in `config.toml`.

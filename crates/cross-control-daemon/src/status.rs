@@ -59,10 +59,7 @@ impl StatusSnapshot {
 /// Path of the status snapshot file. Sits alongside the PID file so both
 /// share the same lifetime and cleanup story.
 pub fn status_file_path() -> PathBuf {
-    dirs::runtime_dir()
-        .or_else(dirs::state_dir)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("cross-control.status.json")
+    crate::setup::runtime_dir().join("cross-control.status.json")
 }
 
 #[cfg(test)]

@@ -42,6 +42,8 @@ struct TestPair {
 
     /// B's `known_peers` file.
     known_peers_b: PathBuf,
+    /// A's certificate fingerprint.
+    fingerprint_a: String,
 
     // Join handles
     handle_a: tokio::task::JoinHandle<()>,
@@ -264,6 +266,7 @@ async fn setup_pair_opts(opts: PairOpts) -> TestPair {
         status_b,
         shutdown_b,
         known_peers_b,
+        fingerprint_a: cert_a.fingerprint.clone(),
         handle_a,
         handle_b,
     }
@@ -1606,5 +1609,137 @@ async fn test_mutual_dial_settles_on_one_session_each() {
     assert_eq!(pair.status_a.borrow().session_count, 1);
     assert_eq!(pair.status_b.borrow().session_count, 1);
 
+    pair.shutdown().await;
+}
+
+/// A peer cannot exhaust virtual devices: announcements beyond the per-peer
+/// cap are ignored, and re-announcing an id replaces its device.
+#[tokio::test]
+async fn test_device_announcements_are_capped_and_deduplicated() {
+    use cross_control_daemon::session::PeerSession;
+    use cross_control_types::DisplayLayout;
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let daemon_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let peer_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let transport = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &daemon_cert.cert_pem,
+        &daemon_cert.key_pem,
+    )
+    .unwrap();
+    let addr = transport.local_addr().unwrap();
+
+    let config = Config {
+        identity: IdentityConfig {
+            name: "target".to_string(),
+        },
+        screens: vec![ScreenConfig {
+            name: "flooder".to_string(),
+            address: None,
+            position: Position::Right,
+            fingerprint: Some(peer_cert.fingerprint.clone()),
+        }],
+        security: SecurityConfig {
+            trust_on_first_use: false,
+            known_peers: Some(scratch_known_peers()),
+        },
+        ..Config::default()
+    };
+    let (capture, _feed) = MockCapture::new();
+    let emulation = MockEmulation::new();
+    let devices = emulation.handle();
+    let mut daemon = Daemon::new(
+        config,
+        MachineId::new(),
+        transport,
+        Box::new(capture),
+        Box::new(emulation),
+    );
+    let mut status = daemon.status_receiver();
+    let shutdown = daemon.event_sender();
+    let handle = tokio::spawn(async move {
+        let _ = daemon.run().await;
+    });
+
+    // An authorized peer that announces far too many devices.
+    let client =
+        cross_control_protocol::QuicTransport::bind(bind, &peer_cert.cert_pem, &peer_cert.key_pem)
+            .unwrap();
+    let conn = client.connect(addr, "cross-control").await.unwrap();
+    let (tx, rx) = conn.open_control_stream().await.unwrap();
+    let mut session = PeerSession::new(conn, tx, rx);
+    session
+        .handshake_initiator(
+            MachineId::new(),
+            "flooder",
+            &DisplayLayout::single(1920, 1080),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    let flood: Vec<DeviceInfo> = (0..40)
+        .map(|i| DeviceInfo {
+            id: DeviceId(i),
+            name: format!("dev{i}"),
+            capabilities: vec![DeviceCapability::Keyboard],
+        })
+        .collect();
+    // Re-announce the first few ids too.
+    session.announce_devices(&flood[..3]).unwrap();
+    session.announce_devices(&flood).unwrap();
+    session.announce_devices(&flood[..3]).unwrap();
+
+    wait_for_status(&mut status, Duration::from_secs(5), |s| {
+        s.session_count == 1
+    })
+    .await
+    .expect("flooder should connect");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let live = devices.devices();
+    assert_eq!(live.len(), 16, "devices must be capped per peer");
+    let mut ids: Vec<_> = live.values().map(|d| d.id).collect();
+    ids.sort_by_key(|id| id.0);
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        live.len(),
+        "a re-announced id must not leak a device"
+    );
+
+    let _ = shutdown.send(DaemonEvent::Shutdown).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// Trusting a peer while both daemons run is enough: the configured side
+/// keeps redialing (with backoff) and connects without a restart.
+#[tokio::test]
+async fn test_redial_connects_once_peer_is_trusted() {
+    let mut pair = setup_pair_opts(PairOpts {
+        b_trust: BTrust::Untrusted,
+        ..PairOpts::default()
+    })
+    .await;
+    assert_no_session(&pair, Duration::from_millis(1500)).await;
+
+    cross_control_daemon::trust::add_known_peer(
+        &pair.known_peers_b,
+        "machine-a",
+        &pair.fingerprint_a,
+    )
+    .unwrap();
+
+    wait_for_status(&mut pair.status_a, Duration::from_secs(10), |s| {
+        s.session_count == 1
+    })
+    .await
+    .expect("A should redial and connect once B trusts it");
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.session_count == 1
+    })
+    .await
+    .expect("B should accept A");
     pair.shutdown().await;
 }

@@ -110,8 +110,11 @@ async fn main() -> anyhow::Result<()> {
             let cert_path = format!("{output}/cross-control.crt");
             let key_path = format!("{output}/cross-control.key");
 
+            cross_control_daemon::setup::write_private_file(
+                std::path::Path::new(&key_path),
+                cert.key_pem.as_bytes(),
+            )?;
             std::fs::write(&cert_path, &cert.cert_pem)?;
-            std::fs::write(&key_path, &cert.key_pem)?;
 
             println!("Certificate: {cert_path}");
             println!("Private key: {key_path}");
@@ -272,7 +275,7 @@ async fn pair_with(address: &str, name: Option<String>, yes: bool) -> anyhow::Re
             None
         }
     };
-    let _ = session.disconnect().await;
+    let _ = session.disconnect();
 
     let trust_us = format!("cross-control trust add \"{our_name}\" {our_fingerprint}");
     let peer_name = match (name, announced) {
@@ -332,7 +335,7 @@ async fn start_daemon(config_path: Option<&str>) -> anyhow::Result<()> {
 
     // Write PID file
     let pid_path = setup::pid_file_path();
-    std::fs::write(&pid_path, std::process::id().to_string())?;
+    setup::write_private_file(&pid_path, std::process::id().to_string().as_bytes())?;
     tracing::info!(pid_file = %pid_path.display(), "wrote PID file");
 
     // Bind transport

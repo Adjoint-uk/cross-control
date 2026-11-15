@@ -51,24 +51,24 @@ impl QuicTransport {
         })
     }
 
+    /// Wait for the next incoming connection attempt, without performing its
+    /// handshake. Lets a caller hand each handshake to its own task (and
+    /// refuse attempts it has no capacity for), so one slow client cannot
+    /// stall the accept loop.
+    pub async fn accept_incoming(&self) -> Result<Incoming, ProtocolError> {
+        self.endpoint
+            .accept()
+            .await
+            .map(Incoming)
+            .ok_or_else(|| ProtocolError::Connection("endpoint closed".to_string()))
+    }
+
     /// Accept an incoming connection. The peer has presented a certificate
     /// and proved it holds the key; whether that certificate is *trusted* is
     /// for the caller to decide from
     /// [`PeerConnection::peer_fingerprint`].
     pub async fn accept(&self) -> Result<PeerConnection, ProtocolError> {
-        let incoming = self
-            .endpoint
-            .accept()
-            .await
-            .ok_or_else(|| ProtocolError::Connection("endpoint closed".to_string()))?;
-
-        let connection = incoming
-            .await
-            .map_err(|e| ProtocolError::Connection(e.to_string()))?;
-
-        let remote = connection.remote_address();
-        debug!(remote = %remote, "accepted connection");
-        Ok(PeerConnection::new(connection))
+        self.accept_incoming().await?.accept().await
     }
 
     /// Connect to a remote peer without pinning its certificate. The caller
@@ -126,5 +126,32 @@ impl QuicTransport {
     pub fn close(&self) {
         self.endpoint.close(quinn::VarInt::from_u32(0), b"shutdown");
         info!("QUIC transport closed");
+    }
+}
+
+/// A connection attempt that has not completed its handshake yet.
+pub struct Incoming(quinn::Incoming);
+
+impl Incoming {
+    /// The address the attempt comes from.
+    #[must_use]
+    pub fn remote_address(&self) -> SocketAddr {
+        self.0.remote_address()
+    }
+
+    /// Complete the TLS handshake (mutual: the peer must present and prove
+    /// a certificate).
+    pub async fn accept(self) -> Result<PeerConnection, ProtocolError> {
+        let connection = self
+            .0
+            .await
+            .map_err(|e| ProtocolError::Connection(e.to_string()))?;
+        debug!(remote = %connection.remote_address(), "accepted connection");
+        Ok(PeerConnection::new(connection))
+    }
+
+    /// Turn the attempt away without doing any cryptographic work.
+    pub fn refuse(self) {
+        self.0.refuse();
     }
 }

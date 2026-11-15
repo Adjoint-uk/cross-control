@@ -262,13 +262,29 @@ pub struct SecurityConfig {
     pub known_peers: Option<std::path::PathBuf>,
 }
 
+/// Largest clipboard payload that fits in one protocol message, leaving room
+/// for the message envelope. Clipboard content is sent in a single message,
+/// so this caps `clipboard.max_size`.
+pub const MAX_CLIPBOARD_SIZE: usize =
+    cross_control_protocol::wire::MAX_MESSAGE_SIZE as usize - 4096;
+
 /// Clipboard subsystem settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Largest clipboard content synced, in bytes. Values above
+    /// [`MAX_CLIPBOARD_SIZE`] are treated as that.
     #[serde(default = "default_max_clipboard_size")]
     pub max_size: usize,
+}
+
+impl ClipboardConfig {
+    /// `max_size`, capped at what one message can carry.
+    #[must_use]
+    pub fn effective_max_size(&self) -> usize {
+        self.max_size.min(MAX_CLIPBOARD_SIZE)
+    }
 }
 
 impl Default for ClipboardConfig {
@@ -336,7 +352,7 @@ fn default_release_hotkey() -> Vec<String> {
 }
 
 fn default_max_clipboard_size() -> usize {
-    10 * 1024 * 1024 // 10 MiB
+    MAX_CLIPBOARD_SIZE
 }
 
 fn default_screen_width() -> u32 {
@@ -350,6 +366,29 @@ fn default_screen_height() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_limit_fits_in_one_message() {
+        use cross_control_types::{ClipboardContent, ClipboardMessage, ControlMessage};
+
+        let cfg = ClipboardConfig {
+            enabled: true,
+            max_size: 10 * 1024 * 1024,
+        };
+        assert_eq!(cfg.effective_max_size(), MAX_CLIPBOARD_SIZE);
+        assert_eq!(
+            ClipboardConfig::default().effective_max_size(),
+            MAX_CLIPBOARD_SIZE
+        );
+
+        // The largest allowed payload must actually encode within the frame
+        // limit, or it would be refused at send time.
+        let msg = ControlMessage::Clipboard(ClipboardMessage::Data(ClipboardContent::png(
+            vec![0xAB; MAX_CLIPBOARD_SIZE],
+        )));
+        let encoded = cross_control_protocol::wire::encode_message(&msg).unwrap();
+        assert!(encoded.len() <= cross_control_protocol::wire::MAX_MESSAGE_SIZE as usize);
+    }
 
     #[test]
     fn default_config_serializes() {
