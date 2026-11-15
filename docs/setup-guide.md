@@ -139,7 +139,7 @@ If it matches, confirm. The laptop is recorded in `~/.config/cross-control/known
 cross-control trust add "workstation" SHA256:12:34:…
 ```
 
-Restart both daemons (`cross-control stop && cross-control start`) and they connect. From now on a peer presenting a different certificate under a trusted name is refused — the equivalent of SSH's "REMOTE HOST IDENTIFICATION HAS CHANGED". `cross-control trust` lists who is trusted; `cross-control trust remove <name>` revokes.
+Restart both daemons (`cross-control stop && cross-control start`) and they connect. (Peers with a configured `address` don't need the restart: the daemon keeps retrying them, backing off to once a minute.) From now on a peer presenting a different certificate under a trusted name is refused — the equivalent of SSH's "REMOTE HOST IDENTIFICATION HAS CHANGED". `cross-control trust` lists who is trusted; `cross-control trust remove <name>` revokes.
 
 You can instead pin fingerprints in `config.toml` (`fingerprint = "SHA256:…"` on a `[[screens]]` entry), or, on a network you fully control, set `[security] trust_on_first_use = true` to accept and remember the first certificate each name presents. See [ADR 0002](adr/0002-tofu-pairing.md) for the threat model.
 

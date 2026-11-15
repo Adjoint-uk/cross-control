@@ -137,7 +137,8 @@ pub enum ClipboardMessage {
     /// Advertise that the clipboard has content available.
     Offer {
         formats: Vec<ClipboardFormat>,
-        /// Size in bytes (hint for the receiver).
+        /// Size in bytes, if known cheaply; 0 means unknown. A hint only:
+        /// the receiver enforces its own limit on the data it gets.
         size_hint: u64,
     },
 

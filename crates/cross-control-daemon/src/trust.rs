@@ -15,7 +15,6 @@
 //! the peer holds the private key for its certificate.
 
 use std::fmt::Write as _;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -332,9 +331,6 @@ fn write_known_peers(path: &Path, entries: &[(String, String)]) -> Result<(), Tr
         path: path.to_path_buf(),
         source,
     };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(io_err)?;
-    }
     let mut text = String::from(
         "# cross-control known peers: <fingerprint> <name>\n\
          # Managed by `cross-control trust`; edit with care.\n",
@@ -343,19 +339,7 @@ fn write_known_peers(path: &Path, entries: &[(String, String)]) -> Result<(), Tr
         let _ = writeln!(text, "{} {name}", display_fingerprint(fp));
     }
 
-    let tmp = path.with_extension("tmp");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&tmp).map_err(io_err)?;
-    file.write_all(text.as_bytes()).map_err(io_err)?;
-    file.sync_all().map_err(io_err)?;
-    drop(file);
-    std::fs::rename(&tmp, path).map_err(io_err)
+    crate::setup::write_private_file(path, text.as_bytes()).map_err(io_err)
 }
 
 #[cfg(test)]

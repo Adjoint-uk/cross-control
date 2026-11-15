@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use cross_control_protocol::{MessageReceiver, MessageSender, PeerConnection};
+use cross_control_protocol::{MessageReceiver, MessageSender, PeerConnection, QueuedSender};
 use cross_control_types::{
     ControlMessage, DeviceId, DeviceInfo, DisplayLayout, InputMessage, MachineId, ProtocolVersion,
     VirtualDeviceId, PROTOCOL_VERSION,
@@ -13,6 +13,13 @@ use tracing::{debug, info, warn};
 
 use crate::error::DaemonError;
 use crate::state::SessionState;
+
+/// Control messages that may wait for a peer before it counts as stalled.
+/// Control traffic is light, but a clipboard payload can be large, so this
+/// is kept small.
+const CONTROL_QUEUE: usize = 64;
+/// Input messages that may wait for a peer. Mouse movement is bursty.
+const INPUT_QUEUE: usize = 1024;
 
 /// Source of [`PeerSession::conn_id`].
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
@@ -26,9 +33,12 @@ pub struct PeerSession {
     pub name: String,
     pub remote_layout: DisplayLayout,
     pub state: SessionState,
-    pub control_tx: MessageSender,
+    /// Control messages, written by a background task so a slow peer
+    /// cannot block the daemon.
+    pub control_tx: QueuedSender,
     control_rx: Option<MessageReceiver>,
-    pub input_tx: Option<MessageSender>,
+    /// Input events while we control the peer, written the same way.
+    pub input_tx: Option<QueuedSender>,
     input_rx: Option<MessageReceiver>,
     /// Map from remote device ID to local virtual device ID.
     pub device_map: HashMap<DeviceId, VirtualDeviceId>,
@@ -89,7 +99,7 @@ impl PeerSession {
             name: String::new(),
             remote_layout: DisplayLayout::default(),
             state: SessionState::Connected,
-            control_tx,
+            control_tx: control_tx.into_queued(CONTROL_QUEUE),
             control_rx: Some(control_rx),
             input_tx: None,
             input_rx: None,
@@ -151,7 +161,7 @@ impl PeerSession {
             name: our_name.to_string(),
             layout: our_layout.clone(),
         };
-        self.control_tx.send(&hello).await?;
+        self.control_tx.send(&hello)?;
         self.state = SessionState::HelloSent;
         debug!("sent Hello");
 
@@ -229,7 +239,7 @@ impl PeerSession {
                     name: our_name.to_string(),
                     layout: our_layout.clone(),
                 };
-                self.control_tx.send(&welcome).await?;
+                self.control_tx.send(&welcome)?;
                 self.state = SessionState::Idle;
                 info!(peer = %name, id = %machine_id, "handshake complete (responder)");
                 Ok(())
@@ -243,10 +253,10 @@ impl PeerSession {
     }
 
     /// Send a `DeviceAnnounce` for each of our devices.
-    pub async fn announce_devices(&mut self, devices: &[DeviceInfo]) -> Result<(), DaemonError> {
+    pub fn announce_devices(&mut self, devices: &[DeviceInfo]) -> Result<(), DaemonError> {
         for device in devices {
             let msg = ControlMessage::DeviceAnnounce(device.clone());
-            self.control_tx.send(&msg).await?;
+            self.control_tx.send(&msg)?;
             debug!(device = %device.name, "announced device");
         }
         Ok(())
@@ -275,14 +285,14 @@ impl PeerSession {
         // Open input stream BEFORE sending Enter so it's available when
         // the remote calls accept_input_stream() upon receiving Enter.
         let input_tx = self.connection.open_input_stream().await?;
-        self.input_tx = Some(input_tx);
+        self.input_tx = Some(input_tx.into_queued(INPUT_QUEUE));
 
         let enter = ControlMessage::Enter {
             edge,
             position,
             exit_edges,
         };
-        if let Err(e) = self.control_tx.send(&enter).await {
+        if let Err(e) = self.control_tx.send(&enter) {
             self.input_tx = None;
             return Err(e.into());
         }
@@ -306,7 +316,7 @@ impl PeerSession {
     ///
     /// Sends `EnterAck` immediately. The input stream must be accepted
     /// separately via [`accept_input_stream`] (typically spawned as a task).
-    pub async fn handle_enter(&mut self) -> Result<(), DaemonError> {
+    pub fn handle_enter(&mut self) -> Result<(), DaemonError> {
         if !self.state.can_enter_controlled() {
             return Err(DaemonError::Protocol(
                 cross_control_protocol::ProtocolError::Handshake(format!(
@@ -316,7 +326,7 @@ impl PeerSession {
             ));
         }
 
-        self.control_tx.send(&ControlMessage::EnterAck).await?;
+        self.control_tx.send(&ControlMessage::EnterAck)?;
         self.state = SessionState::Controlled;
         info!(peer = %self.name, "now being controlled by remote");
         Ok(())
@@ -348,13 +358,13 @@ impl PeerSession {
     }
 
     /// Send Leave message and return to Idle.
-    pub async fn leave(
+    pub fn leave(
         &mut self,
         edge: cross_control_types::ScreenEdge,
         position: u32,
     ) -> Result<(), DaemonError> {
         let leave = ControlMessage::Leave { edge, position };
-        self.control_tx.send(&leave).await?;
+        self.control_tx.send(&leave)?;
         self.input_tx = None;
         self.state = SessionState::Idle;
         info!(peer = %self.name, "left remote control");
@@ -369,9 +379,9 @@ impl PeerSession {
     }
 
     /// Send input events to the remote peer.
-    pub async fn send_input(&mut self, msg: &InputMessage) -> Result<(), DaemonError> {
-        if let Some(tx) = &mut self.input_tx {
-            tx.send(msg).await?;
+    pub fn send_input(&mut self, msg: &InputMessage) -> Result<(), DaemonError> {
+        if let Some(tx) = &self.input_tx {
+            tx.send(msg)?;
             Ok(())
         } else {
             warn!("attempted to send input without open input stream");
@@ -380,9 +390,9 @@ impl PeerSession {
     }
 
     /// Send Bye and close the connection.
-    pub async fn disconnect(&mut self) -> Result<(), DaemonError> {
+    pub fn disconnect(&mut self) -> Result<(), DaemonError> {
         self.state = SessionState::Disconnecting;
-        let _ = self.control_tx.send(&ControlMessage::Bye).await;
+        let _ = self.control_tx.send(&ControlMessage::Bye);
         self.connection.close();
         info!(peer = %self.name, "disconnected");
         Ok(())

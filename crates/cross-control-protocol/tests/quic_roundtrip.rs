@@ -311,3 +311,75 @@ async fn peer_fingerprint_matches_certgen() {
         .expect("server presented a certificate");
     assert_eq!(fp, server_cert.fingerprint);
 }
+
+/// A peer that stops reading must not block the sender: the queued sender
+/// fills up and reports backpressure instead.
+#[tokio::test]
+async fn queued_sender_reports_backpressure_instead_of_blocking() {
+    use cross_control_types::{ClipboardContent, ClipboardMessage};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let server_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let client_cert = cross_control_certgen::generate_certificate("localhost").unwrap();
+    let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    let server = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &server_cert.cert_pem,
+        &server_cert.key_pem,
+    )
+    .unwrap();
+    let addr = server.local_addr().unwrap();
+    // Accept the stream, then never read from it.
+    let (stalled_tx, stalled_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let conn = server.accept().await.unwrap();
+        let streams = conn.accept_control_stream().await.unwrap();
+        let _ = stalled_tx.send(());
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        drop((conn, streams));
+    });
+
+    let client = cross_control_protocol::QuicTransport::bind(
+        bind,
+        &client_cert.cert_pem,
+        &client_cert.key_pem,
+    )
+    .unwrap();
+    let conn = client.connect(addr, "cross-control").await.unwrap();
+    let (tx, _rx) = conn.open_control_stream().await.unwrap();
+    let queued = tx.into_queued(4);
+
+    let big = ControlMessage::Clipboard(ClipboardMessage::Data(ClipboardContent::text(
+        &"x".repeat(256 * 1024),
+    )));
+    queued.send(&big).unwrap();
+    stalled_rx.await.unwrap();
+
+    let start = std::time::Instant::now();
+    let mut backpressure = false;
+    for _ in 0..1000 {
+        match queued.send(&big) {
+            Ok(()) => tokio::task::yield_now().await,
+            Err(cross_control_protocol::ProtocolError::Backpressure) => {
+                backpressure = true;
+                break;
+            }
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+    }
+    assert!(backpressure, "a stalled peer must surface as backpressure");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "send must never wait for the peer"
+    );
+
+    // Oversized messages are refused up front, not queued.
+    let huge = ControlMessage::Clipboard(ClipboardMessage::Data(ClipboardContent::text(
+        &"x".repeat(2 * 1024 * 1024),
+    )));
+    assert!(matches!(
+        queued.send(&huge),
+        Err(cross_control_protocol::ProtocolError::Serialization(_))
+    ));
+}

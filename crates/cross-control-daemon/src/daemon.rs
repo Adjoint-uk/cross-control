@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use cross_control_clipboard::ClipboardProvider;
 use cross_control_discovery::{
-    Discovery, DiscoveryAggregator, DiscoveryEvent, MdnsDiscovery, Peer, StaticDiscovery,
+    Discovery, DiscoveryAggregator, DiscoveryEvent, MdnsDiscovery, Peer,
 };
 use cross_control_input::{InputCapture, InputEmulation};
 use cross_control_protocol::tls::normalize_fingerprint;
@@ -32,6 +32,25 @@ const STATUS_INTERVAL: Duration = Duration::from_secs(2);
 
 /// How long to wait for `EnterAck` before abandoning a hand-off.
 const ENTER_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Longest a connection may take from first packet to a ready session (TLS
+/// plus Hello/Welcome). Stops a peer that connects and goes quiet from
+/// holding resources indefinitely.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Inbound handshakes allowed in flight at once. Further attempts are turned
+/// away before any cryptographic work, so a flood of connection attempts
+/// costs little.
+const MAX_PENDING_HANDSHAKES: usize = 16;
+
+/// Virtual devices a single peer may create here. A real machine has a
+/// handful; the cap stops a peer from exhausting uinput.
+const MAX_DEVICES_PER_PEER: usize = 16;
+
+/// First retry delay for a configured peer we have no session with; doubles
+/// on each failure up to [`REDIAL_MAX`].
+const REDIAL_MIN: Duration = Duration::from_secs(1);
+const REDIAL_MAX: Duration = Duration::from_secs(60);
 
 /// After a refused or timed-out hand-off, how long before we try again, so a
 /// busy peer is not sent an `Enter` on every mouse movement at the edge.
@@ -292,6 +311,13 @@ impl Daemon {
         let screen = layout.bounding_box();
         let trust =
             TrustStore::from_config(&config, crate::setup::config_dir().join("known_peers"));
+        if config.clipboard.max_size > crate::config::MAX_CLIPBOARD_SIZE {
+            warn!(
+                configured = config.clipboard.max_size,
+                limit = crate::config::MAX_CLIPBOARD_SIZE,
+                "clipboard.max_size exceeds what one message can carry; capping it"
+            );
+        }
         let (event_tx, event_rx) = mpsc::channel(1024);
         let cursor_x = screen
             .x
@@ -425,10 +451,27 @@ impl Daemon {
         {
             let transport = self.transport.clone();
             let ctx = self.handshake_ctx();
+            let slots = Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_HANDSHAKES));
             tokio::spawn(async move {
                 loop {
-                    match transport.accept().await {
-                        Ok(conn) => spawn_inbound_handshake(conn, ctx.clone()),
+                    match transport.accept_incoming().await {
+                        Ok(incoming) => {
+                            if let Ok(slot) = Arc::clone(&slots).try_acquire_owned() {
+                                let remote = incoming.remote_address();
+                                spawn_inbound_handshake(
+                                    async move { Ok(incoming.accept().await?) },
+                                    remote,
+                                    ctx.clone(),
+                                    Some(slot),
+                                );
+                            } else {
+                                warn!(
+                                    remote = %incoming.remote_address(),
+                                    "too many handshakes in progress; refusing connection"
+                                );
+                                incoming.refuse();
+                            }
+                        }
                         Err(e) => {
                             debug!(error = %e, "accept loop ending");
                             break;
@@ -460,8 +503,24 @@ impl Daemon {
                 Some((sc.name.clone(), addr, sc.fingerprint.clone()))
             })
             .collect();
+        // Configured addresses are dialed by the redialer, which retries with
+        // backoff until a session exists and again whenever it drops.
         if !static_entries.is_empty() {
-            aggregator.push(Box::new(StaticDiscovery::from_addresses(static_entries)));
+            let peers = static_entries
+                .into_iter()
+                .map(|(name, address, fingerprint)| Peer {
+                    machine_id: MachineId::new(),
+                    name,
+                    address,
+                    fingerprint,
+                })
+                .collect();
+            spawn_redialer(
+                peers,
+                self.transport.clone(),
+                self.handshake_ctx(),
+                Arc::clone(&self.dialed_addrs),
+            );
         }
 
         // mDNS backend — gated on the daemon.discovery config flag so a user
@@ -539,7 +598,12 @@ impl Daemon {
                     ticker.tick().await;
                     let json = snapshot.lock().ok().and_then(|s| s.to_json().ok());
                     if let Some(json) = json {
-                        let _ = std::fs::write(&path, json);
+                        // Filesystem calls block: keep them off the runtime.
+                        let path = path.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::setup::write_private_file(&path, json.as_bytes())
+                        })
+                        .await;
                     }
                 }
             }));
@@ -568,7 +632,7 @@ impl Daemon {
                 }
                 _ = ping_interval.tick() => {
                     self.expire_pending_enter();
-                    self.send_pings().await;
+                    self.send_pings();
                 }
             }
         }
@@ -579,17 +643,20 @@ impl Daemon {
     /// Send a liveness ping to every peer and record the send time so the
     /// round-trip time can be computed when the `Pong` returns. Refreshes the
     /// status snapshot afterward.
-    async fn send_pings(&mut self) {
+    fn send_pings(&mut self) {
         let seq = self.next_ping_seq;
         self.next_ping_seq = self.next_ping_seq.wrapping_add(1);
         for session in self.sessions.values_mut() {
-            if session
-                .control_tx
-                .send(&ControlMessage::Ping { seq })
-                .await
-                .is_ok()
-            {
-                session.record_ping_sent(seq);
+            match session.control_tx.send(&ControlMessage::Ping { seq }) {
+                Ok(()) => session.record_ping_sent(seq),
+                Err(cross_control_protocol::ProtocolError::Backpressure) => {
+                    // Its control queue has been full for a whole ping
+                    // interval: the peer is not reading. Close; the control
+                    // reader then reports the disconnect.
+                    warn!(peer = %session.name, "peer is not reading; disconnecting");
+                    session.connection.close_with_reason("not responding");
+                }
+                Err(e) => debug!(peer = %session.name, error = %e, "ping failed"),
             }
         }
         self.update_snapshot();
@@ -666,7 +733,13 @@ impl Daemon {
                 return true;
             }
             DaemonEvent::IncomingConnection(conn) => {
-                spawn_inbound_handshake(conn, self.handshake_ctx());
+                let remote = conn.remote_address();
+                spawn_inbound_handshake(
+                    std::future::ready(Ok(conn)),
+                    remote,
+                    self.handshake_ctx(),
+                    None,
+                );
             }
         }
         self.broadcast_status();
@@ -866,7 +939,7 @@ impl Daemon {
                 events: vec![captured.event],
             };
             let sent = match self.sessions.get_mut(&peer_id) {
-                Some(session) => session.send_input(&msg).await,
+                Some(session) => session.send_input(&msg),
                 None => Ok(()),
             };
             if let Err(e) = sent {
@@ -1068,7 +1141,7 @@ impl Daemon {
             if let Some(session) = self.sessions.get_mut(&peer_id) {
                 // The edge and position are not used for routing here: the
                 // remote just stops being controlled.
-                let _ = session.leave(ScreenEdge::Left, 0).await;
+                let _ = session.leave(ScreenEdge::Left, 0);
             }
             let _ = self.capture.release().await;
             self.center_cursor();
@@ -1135,8 +1208,7 @@ impl Daemon {
                 position,
                 exit_edges,
             } => {
-                self.handle_enter(machine_id, edge, position, exit_edges)
-                    .await;
+                self.handle_enter(machine_id, edge, position, exit_edges);
             }
             ControlMessage::EnterAck => {
                 let pending = self.pending_enter.map(|(id, _)| id);
@@ -1164,7 +1236,7 @@ impl Daemon {
                 // believing we control it.
                 warn!(peer = %machine_id, "unsolicited EnterAck; asking peer to stand down");
                 if let Some(session) = self.sessions.get_mut(&machine_id) {
-                    let _ = session.leave(ScreenEdge::Left, 0).await;
+                    let _ = session.leave(ScreenEdge::Left, 0);
                     session.reset_to_idle();
                 }
             }
@@ -1179,28 +1251,54 @@ impl Daemon {
             }
             ControlMessage::DeviceAnnounce(info) => {
                 debug!(peer = %machine_id, device = %info.name, "device announced");
-                if let Some(session) = self.sessions.get_mut(&machine_id) {
-                    match self.emulation.create_device(&info).await {
-                        Ok(virtual_id) => {
-                            session.device_map.insert(info.id, virtual_id);
-                            session.remote_devices.push(info);
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "failed to create virtual device");
-                        }
+                let Some(session) = self.sessions.get_mut(&machine_id) else {
+                    return;
+                };
+                // A re-announced id replaces its device rather than leaking
+                // the old virtual one.
+                if let Some(old) = session.device_map.remove(&info.id) {
+                    session.remote_devices.retain(|d| d.id != info.id);
+                    self.injected_held.remove(&old);
+                    let _ = self.emulation.destroy_device(old).await;
+                }
+                if session.device_map.len() >= MAX_DEVICES_PER_PEER {
+                    warn!(
+                        peer = %machine_id,
+                        device = %info.name,
+                        "peer announced more than {MAX_DEVICES_PER_PEER} devices; ignoring"
+                    );
+                    return;
+                }
+                match self.emulation.create_device(&info).await {
+                    Ok(virtual_id) => {
+                        session.device_map.insert(info.id, virtual_id);
+                        session.remote_devices.push(info);
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to create virtual device");
                     }
                 }
             }
             ControlMessage::DeviceGone { device_id } => {
                 if let Some(session) = self.sessions.get_mut(&machine_id) {
+                    session.remote_devices.retain(|d| d.id != device_id);
                     if let Some(virtual_id) = session.device_map.remove(&device_id) {
+                        // Release anything still held on it first.
+                        if let Some(held) = self.injected_held.remove(&virtual_id) {
+                            for input in held {
+                                let _ = self
+                                    .emulation
+                                    .inject(virtual_id, input.release_event())
+                                    .await;
+                            }
+                        }
                         let _ = self.emulation.destroy_device(virtual_id).await;
                     }
                 }
             }
             ControlMessage::Ping { seq } => {
                 if let Some(session) = self.sessions.get_mut(&machine_id) {
-                    let _ = session.control_tx.send(&ControlMessage::Pong { seq }).await;
+                    let _ = session.control_tx.send(&ControlMessage::Pong { seq });
                 }
             }
             ControlMessage::Pong { seq } => {
@@ -1237,10 +1335,14 @@ impl Daemon {
                 return;
             }
         };
-        let size_hint = clipboard.get().await.map_or(0, |c| c.size() as u64);
-        let offer = ControlMessage::Clipboard(ClipboardMessage::Offer { formats, size_hint });
+        // Reading the content just to measure it would copy a possibly large
+        // image on every hand-off; the size is only a hint, so say unknown.
+        let offer = ControlMessage::Clipboard(ClipboardMessage::Offer {
+            formats,
+            size_hint: 0,
+        });
         if let Some(session) = self.sessions.get_mut(&peer_id) {
-            if let Err(e) = session.control_tx.send(&offer).await {
+            if let Err(e) = session.control_tx.send(&offer) {
                 debug!(peer = %peer_id, error = %e, "failed to send clipboard offer");
             }
         }
@@ -1258,7 +1360,7 @@ impl Daemon {
                 };
                 let request = ControlMessage::Clipboard(ClipboardMessage::Request { format });
                 if let Some(session) = self.sessions.get_mut(&peer_id) {
-                    if let Err(e) = session.control_tx.send(&request).await {
+                    if let Err(e) = session.control_tx.send(&request) {
                         debug!(peer = %peer_id, error = %e, "failed to send clipboard request");
                     }
                 }
@@ -1277,7 +1379,7 @@ impl Daemon {
                 // Enforce the configured size cap before putting a large
                 // payload on the wire. Streaming large images is a follow-up;
                 // for now oversized content is simply not synced.
-                let max = self.config.clipboard.max_size;
+                let max = self.config.clipboard.effective_max_size();
                 if content.size() > max {
                     warn!(
                         peer = %peer_id,
@@ -1290,13 +1392,13 @@ impl Daemon {
                 }
                 let data = ControlMessage::Clipboard(ClipboardMessage::Data(content));
                 if let Some(session) = self.sessions.get_mut(&peer_id) {
-                    if let Err(e) = session.control_tx.send(&data).await {
+                    if let Err(e) = session.control_tx.send(&data) {
                         debug!(peer = %peer_id, error = %e, "failed to send clipboard data");
                     }
                 }
             }
             ClipboardMessage::Data(content) => {
-                let max = self.config.clipboard.max_size;
+                let max = self.config.clipboard.effective_max_size();
                 if content.size() > max {
                     warn!(
                         peer = %peer_id,
@@ -1324,7 +1426,7 @@ impl Daemon {
     /// and the other side yields, so exactly one direction wins. Anything else
     /// is answered with `EnterReject` so the sender does not wait for an ack
     /// that will never come.
-    async fn handle_enter(
+    fn handle_enter(
         &mut self,
         machine_id: MachineId,
         edge: ScreenEdge,
@@ -1336,7 +1438,7 @@ impl Daemon {
         if self.pending_enter.map(|(id, _)| id) == Some(machine_id) {
             if self.machine_id.as_uuid() < machine_id.as_uuid() {
                 debug!(peer = %machine_id, "simultaneous hand-off: keeping ours");
-                self.reject_enter(machine_id).await;
+                self.reject_enter(machine_id);
                 return;
             }
             debug!(peer = %machine_id, "simultaneous hand-off: yielding");
@@ -1348,7 +1450,7 @@ impl Daemon {
 
         if !self.is_idle() {
             debug!(peer = %machine_id, "busy; refusing hand-off");
-            self.reject_enter(machine_id).await;
+            self.reject_enter(machine_id);
             return;
         }
 
@@ -1356,9 +1458,9 @@ impl Daemon {
         let Some(session) = self.sessions.get_mut(&machine_id) else {
             return;
         };
-        if let Err(e) = session.handle_enter().await {
+        if let Err(e) = session.handle_enter() {
             warn!(peer = %machine_id, error = %e, "cannot accept hand-off");
-            self.reject_enter(machine_id).await;
+            self.reject_enter(machine_id);
             return;
         }
 
@@ -1375,9 +1477,9 @@ impl Daemon {
         self.spawn_accept_input_stream(machine_id);
     }
 
-    async fn reject_enter(&mut self, machine_id: MachineId) {
+    fn reject_enter(&mut self, machine_id: MachineId) {
         if let Some(session) = self.sessions.get_mut(&machine_id) {
-            if let Err(e) = session.control_tx.send(&ControlMessage::EnterReject).await {
+            if let Err(e) = session.control_tx.send(&ControlMessage::EnterReject) {
                 debug!(peer = %machine_id, error = %e, "failed to send EnterReject");
             }
         }
@@ -1466,7 +1568,7 @@ impl Daemon {
             info!(peer = %machine_id, ?edge, position, "cursor hit edge, sending Leave");
             self.end_controlled().await;
             if let Some(session) = self.sessions.get_mut(&machine_id) {
-                let _ = session.leave(edge, position).await;
+                let _ = session.leave(edge, position);
             }
             return;
         }
@@ -1526,7 +1628,7 @@ impl Daemon {
         let peer_ids: Vec<MachineId> = self.sessions.keys().copied().collect();
         for peer_id in peer_ids {
             if let Some(mut session) = self.sessions.remove(&peer_id) {
-                let _ = session.disconnect().await;
+                let _ = session.disconnect();
             }
         }
 
@@ -1586,6 +1688,11 @@ fn claim_dial(dialed: &Arc<Mutex<HashSet<SocketAddr>>>, addr: SocketAddr) -> boo
     }
 }
 
+/// Whether a dial slot is held (a session or a dial in progress).
+fn is_dial_claimed(dialed: &Arc<Mutex<HashSet<SocketAddr>>>, addr: SocketAddr) -> bool {
+    dialed.lock().map_or(true, |set| set.contains(&addr))
+}
+
 /// Release a previously-claimed dial slot so the address can be retried
 /// (e.g. after a failed handshake or a peer disconnect).
 fn release_dial(dialed: &Arc<Mutex<HashSet<SocketAddr>>>, addr: SocketAddr) {
@@ -1594,12 +1701,26 @@ fn release_dial(dialed: &Arc<Mutex<HashSet<SocketAddr>>>, addr: SocketAddr) {
     }
 }
 
-/// Spawn a background task that runs the responder handshake on an
-/// accepted connection and hands the session to the daemon.
-fn spawn_inbound_handshake(conn: PeerConnection, ctx: HandshakeCtx) {
+/// Spawn a background task that completes an inbound connection (`connect`
+/// resolves once TLS is done) and runs the responder handshake, then hands
+/// the session to the daemon. The whole exchange is bounded by
+/// [`HANDSHAKE_TIMEOUT`]; `slot` is held until it ends.
+fn spawn_inbound_handshake(
+    connect: impl std::future::Future<Output = Result<PeerConnection, DaemonError>> + Send + 'static,
+    remote: SocketAddr,
+    ctx: HandshakeCtx,
+    slot: Option<tokio::sync::OwnedSemaphorePermit>,
+) {
     tokio::spawn(async move {
-        let remote = conn.remote_address();
-        match perform_handshake_responder(conn, &ctx).await {
+        let _slot = slot;
+        let handshake = async {
+            let conn = connect.await?;
+            perform_handshake_responder(conn, &ctx).await
+        };
+        let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake)
+            .await
+            .unwrap_or_else(|_| Err(handshake_timed_out()));
+        match result {
             Ok(session) => {
                 info!(peer = %session.name, remote = %remote, "inbound handshake complete");
                 let _ = ctx
@@ -1621,12 +1742,14 @@ fn spawn_inbound_handshake(conn: PeerConnection, ctx: HandshakeCtx) {
 /// The certificate is pinned to what the trust store holds for the peer's
 /// name. A fingerprint from discovery (mDNS TXT) is not used for that: anyone
 /// on the LAN can advertise one, so it is only a hint.
+///
+/// The task's result says whether a session was established.
 fn spawn_outbound_handshake(
     transport: QuicTransport,
     peer: Peer,
     ctx: HandshakeCtx,
     dialed: Arc<Mutex<HashSet<SocketAddr>>>,
-) {
+) -> tokio::task::JoinHandle<bool> {
     tokio::spawn(async move {
         let addr = peer.address;
         let pin = ctx.trust.pin_for(&peer.name);
@@ -1635,10 +1758,13 @@ fn spawn_outbound_handshake(
                 debug!(peer = %peer.name, "advertised fingerprint differs from the trusted one");
             }
         }
-        let result = match transport.connect_pinned(addr, "cross-control", pin).await {
-            Ok(conn) => perform_handshake_initiator(conn, &ctx).await,
-            Err(e) => Err(e.into()),
+        let handshake = async {
+            let conn = transport.connect_pinned(addr, "cross-control", pin).await?;
+            perform_handshake_initiator(conn, &ctx).await
         };
+        let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake)
+            .await
+            .unwrap_or_else(|_| Err(handshake_timed_out()));
         match result {
             Ok(session) => {
                 info!(peer = %session.name, address = %addr, "outbound handshake complete");
@@ -1651,14 +1777,88 @@ fn spawn_outbound_handshake(
                     .is_err()
                 {
                     release_dial(&dialed, addr);
+                    return false;
                 }
+                true
             }
             Err(e) => {
                 warn!(peer = %peer.name, address = %addr, error = %e, "outbound handshake failed");
                 release_dial(&dialed, addr);
+                false
+            }
+        }
+    })
+}
+
+/// A configured peer the redialer looks after.
+struct RedialEntry {
+    peer: Peer,
+    next_attempt: Instant,
+    delay: Duration,
+    attempt: Option<tokio::task::JoinHandle<bool>>,
+}
+
+/// Keep dialing configured peers: right away, then whenever there is no
+/// session with them, backing off exponentially while attempts fail. A
+/// session that drops releases its dial slot, so it is redialed after
+/// [`REDIAL_MIN`]. Stops when the daemon's event loop is gone.
+fn spawn_redialer(
+    peers: Vec<Peer>,
+    transport: QuicTransport,
+    ctx: HandshakeCtx,
+    dialed: Arc<Mutex<HashSet<SocketAddr>>>,
+) {
+    tokio::spawn(async move {
+        let now = Instant::now();
+        let mut entries: Vec<RedialEntry> = peers
+            .into_iter()
+            .map(|peer| RedialEntry {
+                peer,
+                next_attempt: now,
+                delay: REDIAL_MIN,
+                attempt: None,
+            })
+            .collect();
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        while !ctx.event_tx.is_closed() {
+            tick.tick().await;
+            let now = Instant::now();
+            for entry in &mut entries {
+                if entry.attempt.as_ref().is_some_and(|a| !a.is_finished()) {
+                    continue;
+                }
+                if let Some(attempt) = entry.attempt.take() {
+                    // Already finished, so this does not wait.
+                    if attempt.await.unwrap_or(false) {
+                        entry.delay = REDIAL_MIN;
+                    }
+                }
+                if is_dial_claimed(&dialed, entry.peer.address) {
+                    // Connected (perhaps inbound), or dialing elsewhere.
+                    entry.delay = REDIAL_MIN;
+                    entry.next_attempt = now + REDIAL_MIN;
+                    continue;
+                }
+                if now < entry.next_attempt || !claim_dial(&dialed, entry.peer.address) {
+                    continue;
+                }
+                entry.attempt = Some(spawn_outbound_handshake(
+                    transport.clone(),
+                    entry.peer.clone(),
+                    ctx.clone(),
+                    Arc::clone(&dialed),
+                ));
+                entry.next_attempt = now + entry.delay;
+                entry.delay = (entry.delay * 2).min(REDIAL_MAX);
             }
         }
     });
+}
+
+fn handshake_timed_out() -> DaemonError {
+    DaemonError::Protocol(cross_control_protocol::ProtocolError::Handshake(format!(
+        "timed out after {HANDSHAKE_TIMEOUT:?}"
+    )))
 }
 
 /// Close `conn` after a failed handshake, telling the peer why when it was
@@ -1684,7 +1884,7 @@ async fn perform_handshake_responder(
         session
             .handshake_responder(ctx.our_id, &ctx.our_name, &ctx.our_layout, authorize)
             .await?;
-        session.announce_devices(&ctx.local_devices).await
+        session.announce_devices(&ctx.local_devices)
     }
     .await;
     if let Err(e) = result {
@@ -1707,7 +1907,7 @@ async fn perform_handshake_initiator(
         session
             .handshake_initiator(ctx.our_id, &ctx.our_name, &ctx.our_layout, authorize)
             .await?;
-        session.announce_devices(&ctx.local_devices).await
+        session.announce_devices(&ctx.local_devices)
     }
     .await;
     if let Err(e) = result {

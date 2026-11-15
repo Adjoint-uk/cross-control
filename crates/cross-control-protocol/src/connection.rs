@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 
 use bincode::{Decode, Encode};
 use quinn::{Connection, RecvStream, SendStream};
+use tokio::sync::mpsc;
 use tracing::trace;
 
 use crate::error::ProtocolError;
@@ -104,23 +105,26 @@ impl MessageSender {
 
     /// Send a message, encoding it as length-prefixed bincode.
     pub async fn send<T: Encode>(&mut self, msg: &T) -> Result<(), ProtocolError> {
-        let payload = encode_payload(msg)?;
+        let payload = frame_payload(msg)?;
+        self.send_payload(&payload).await
+    }
 
+    /// Hand this stream to a background writer task. Messages are then
+    /// queued without waiting for the peer; see [`QueuedSender`].
+    #[must_use]
+    pub fn into_queued(self, capacity: usize) -> QueuedSender {
+        QueuedSender::spawn(self, capacity)
+    }
+
+    async fn send_payload(&mut self, payload: &[u8]) -> Result<(), ProtocolError> {
         let len = u32::try_from(payload.len())
             .map_err(|_| ProtocolError::Serialization("message too large".to_string()))?;
-
-        if len > MAX_MESSAGE_SIZE {
-            return Err(ProtocolError::Serialization(format!(
-                "message size {len} exceeds maximum {MAX_MESSAGE_SIZE}"
-            )));
-        }
-
         self.stream
             .write_all(&len.to_be_bytes())
             .await
             .map_err(|e| ProtocolError::Connection(e.to_string()))?;
         self.stream
-            .write_all(&payload)
+            .write_all(payload)
             .await
             .map_err(|e| ProtocolError::Connection(e.to_string()))?;
 
@@ -133,6 +137,64 @@ impl MessageSender {
         self.stream
             .finish()
             .map_err(|e| ProtocolError::Connection(e.to_string()))
+    }
+}
+
+/// Encode `msg` and check it fits in one frame.
+fn frame_payload<T: Encode>(msg: &T) -> Result<Vec<u8>, ProtocolError> {
+    let payload = encode_payload(msg)?;
+    if payload.len() > MAX_MESSAGE_SIZE as usize {
+        return Err(ProtocolError::Serialization(format!(
+            "message size {} exceeds maximum {MAX_MESSAGE_SIZE}",
+            payload.len()
+        )));
+    }
+    Ok(payload)
+}
+
+/// A send stream drained by a background task.
+///
+/// [`send`](Self::send) encodes the message and queues it without waiting
+/// for the network, so a peer that stops reading cannot stall the caller
+/// (e.g. the daemon's event loop). When the queue is full the peer is not
+/// keeping up and `send` fails with [`ProtocolError::Backpressure`]; the
+/// caller decides whether to drop the message or the peer.
+pub struct QueuedSender {
+    tx: mpsc::Sender<Vec<u8>>,
+    writer: tokio::task::JoinHandle<()>,
+}
+
+impl QueuedSender {
+    fn spawn(mut sender: MessageSender, capacity: usize) -> Self {
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(capacity.max(1));
+        let writer = tokio::spawn(async move {
+            while let Some(payload) = rx.recv().await {
+                if let Err(e) = sender.send_payload(&payload).await {
+                    trace!(error = %e, "queued writer stopping");
+                    return;
+                }
+            }
+            // All senders dropped: everything queued has been written.
+            let _ = sender.finish();
+        });
+        Self { tx, writer }
+    }
+
+    /// Encode `msg` and queue it for sending.
+    pub fn send<T: Encode>(&self, msg: &T) -> Result<(), ProtocolError> {
+        let payload = frame_payload(msg)?;
+        self.tx.try_send(payload).map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => ProtocolError::Backpressure,
+            mpsc::error::TrySendError::Closed(_) => ProtocolError::StreamClosed,
+        })
+    }
+
+    /// Stop accepting messages and wait (at most `timeout`) for the queued
+    /// ones to be written and the stream finished.
+    pub async fn finish(self, timeout: std::time::Duration) {
+        let Self { tx, writer } = self;
+        drop(tx);
+        let _ = tokio::time::timeout(timeout, writer).await;
     }
 }
 

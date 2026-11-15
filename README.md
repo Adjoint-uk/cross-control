@@ -109,7 +109,9 @@ cross-control pair 192.168.1.20 --name laptop
 
 `pair` records the laptop in `~/.config/cross-control/known_peers` and prints
 a `cross-control trust add "workstation" SHA256:…` command: run it on the
-laptop so it trusts the workstation back. Restart both daemons to connect.
+laptop so it trusts the workstation back. A machine with the other's
+`address` configured keeps retrying (backing off to once a minute), so they
+connect on their own shortly after.
 
 Alternatively, pin fingerprints directly with `fingerprint = "SHA256:…"` in
 the `[[screens]]` entries below.

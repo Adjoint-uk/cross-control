@@ -20,7 +20,7 @@ release_hotkey = ["LeftCtrl", "LeftShift", "Escape"]
 
 [clipboard]
 enabled = true
-max_size = 10485760  # 10 MiB
+max_size = 1044480   # bytes; ~1 MiB is also the most one message can carry
 
 # ── Monitors (optional) ──────────────────────────────────────────────────
 #
