@@ -124,4 +124,105 @@ mod tests {
         let result: Result<Vec<u8>, _> = decode_message(&payload);
         assert!(result.is_err());
     }
+
+    /// Deterministic xorshift generator, so failures reproduce.
+    struct XorShift(u64);
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn byte(&mut self) -> u8 {
+            self.next().to_le_bytes()[0]
+        }
+        fn below(&mut self, n: usize) -> usize {
+            usize::try_from(self.next() % n as u64).unwrap()
+        }
+    }
+
+    /// Valid encodings of a spread of messages, as mutation seeds.
+    fn seed_payloads() -> Vec<Vec<u8>> {
+        use cross_control_types::{
+            ClipboardContent, ClipboardMessage, DeviceCapability, DeviceId, DeviceInfo, InputEvent,
+            InputMessage, KeyCode, ScreenEdge,
+        };
+        let messages = [
+            Message::Control(ControlMessage::Hello {
+                version: PROTOCOL_VERSION,
+                machine_id: MachineId::new(),
+                name: "seed".to_string(),
+                layout: DisplayLayout::single(1920, 1080),
+            }),
+            Message::Control(ControlMessage::Enter {
+                edge: ScreenEdge::Right,
+                position: 540,
+                exit_edges: vec![ScreenEdge::Left, ScreenEdge::Top],
+            }),
+            Message::Control(ControlMessage::DeviceAnnounce(DeviceInfo {
+                id: DeviceId(7),
+                name: "kbd".to_string(),
+                capabilities: vec![DeviceCapability::Keyboard],
+            })),
+            Message::Control(ControlMessage::Clipboard(ClipboardMessage::Data(
+                ClipboardContent::html("<b>x</b>"),
+            ))),
+            Message::Input(InputMessage {
+                device_id: DeviceId(1),
+                timestamp_us: 42,
+                events: vec![
+                    InputEvent::MouseMove { dx: -3, dy: 9 },
+                    InputEvent::Key {
+                        code: KeyCode::KeyA,
+                        state: cross_control_types::ButtonState::Pressed,
+                    },
+                ],
+            }),
+        ];
+        messages
+            .iter()
+            .map(|m| encode_payload(m).unwrap())
+            .collect()
+    }
+
+    /// Whatever bytes a peer sends, decoding returns `Ok` or `Err`: it never
+    /// panics, aborts, or allocates beyond the frame limit. A cheap,
+    /// always-on complement to the cargo-fuzz targets in `fuzz/`.
+    #[test]
+    fn decoder_survives_random_and_mutated_input() {
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        let seeds = seed_payloads();
+        for seed in &seeds {
+            let _: Message = decode_message(seed).expect("seed must decode");
+        }
+
+        for _ in 0..50_000 {
+            let len = rng.below(96);
+            let bytes: Vec<u8> = (0..len).map(|_| rng.byte()).collect();
+            let _ = decode_message::<Message>(&bytes);
+        }
+
+        for _ in 0..50_000 {
+            let mut bytes = seeds[rng.below(seeds.len())].clone();
+            match rng.below(4) {
+                0 => {
+                    let i = rng.below(bytes.len());
+                    bytes[i] = rng.byte();
+                }
+                1 => bytes.truncate(rng.below(bytes.len())),
+                2 => {
+                    // Splice in a huge varint length somewhere.
+                    let i = rng.below(bytes.len());
+                    let claimed = rng.next() | (1 << 40);
+                    bytes.splice(i..i, hostile_len_prefix(claimed));
+                }
+                _ => {
+                    let i = rng.below(bytes.len());
+                    bytes.insert(i, rng.byte());
+                }
+            }
+            let _ = decode_message::<Message>(&bytes);
+        }
+    }
 }

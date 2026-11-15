@@ -267,7 +267,7 @@ See `examples/config.toml` for all configuration options.
 cross-control is in early development. Current status:
 
 - [x] **Phase 0**: Workspace scaffold, shared types, trait definitions, CI
-- [x] **Phase 1** (`v0.2.0-alpha`): Linux-to-Linux end-to-end — evdev capture, QUIC transport, multi-hop switching, mDNS discovery, TOFU pinning, 64 tests
+- [x] **Phase 1** (`v0.2.0-alpha`): Linux-to-Linux end-to-end — evdev capture, QUIC transport, multi-hop switching, mDNS discovery, certificate pinning, 64 tests
 - [ ] **Phase 2** (`v0.5.0-beta`): Clipboard sharing, multi-monitor, reconnect, polished setup
 - [ ] **Phase 3** (`v0.9.0`): Windows + macOS input backends, distro packaging
 - [ ] **Phase 4** (`1.0.0`): Protocol freeze, ADRs, security model, fuzz testing
