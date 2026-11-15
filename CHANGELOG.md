@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the whole workspace builds and tests on Windows
+
+- **The Linux input backend now compiles only on Linux targets.** Before, `evdev` was gated only by the `linux` feature, which is on by default in the CLI, so the CLI could not compile for Windows at all, and Windows CI excluded it. CI now builds and tests every crate on Windows. On Windows the daemon runs with `[input] backend = "none"` until a native backend lands; any other setting gives a clear configuration error.
+- **New `CROSS_CONTROL_CONFIG_DIR` and `CROSS_CONTROL_RUNTIME_DIR` overrides** for the configuration and runtime directories, on every platform. `service install` writes them into the unit. The Ansible role uses them instead of an `XDG_CONFIG_HOME` workaround, so `cross_control_config_dir` can be any path.
+
 ### Added — bring-up tooling
 
 - **`cross-control doctor`** checks whether a machine is ready to run cross-control, and prints the exact fix for each problem. With `--json` it gives machine-readable results, and it exits 1 if any check fails. It checks:

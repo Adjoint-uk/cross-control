@@ -8,12 +8,9 @@
     that:
       - cross_control_input_backend in ['auto', 'evdev', 'none']
       - (cross_control_cert | length > 0) == (cross_control_key | length > 0)
-      - cross_control_config_dir | basename == 'cross-control'
     fail_msg: >-
       cross_control_input_backend must be auto, evdev or none;
-      cross_control_cert / cross_control_key must be set together; and
-      cross_control_config_dir must end in /cross-control (the daemon finds
-      it through XDG_CONFIG_HOME).
+      and cross_control_cert / cross_control_key must be set together.
     quiet: true
 
 - name: Install the binary

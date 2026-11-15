@@ -32,8 +32,8 @@ impl Home {
     fn run(&self, args: &[&str]) -> (i32, String, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_cross-control"))
             .args(args)
-            .env("XDG_CONFIG_HOME", self.0.join("config"))
-            .env("XDG_RUNTIME_DIR", self.0.join("run"))
+            .env("CROSS_CONTROL_CONFIG_DIR", self.config_dir())
+            .env("CROSS_CONTROL_RUNTIME_DIR", self.0.join("run"))
             .env_remove("RUST_LOG")
             .output()
             .expect("run cross-control");
@@ -99,7 +99,8 @@ fn identity_uses_configured_certificate() {
     let config = home.write(
         "custom.toml",
         &format!(
-            "[identity]\nname = \"desk\"\ncert = \"{}\"\nkey = \"{}\"\n",
+            // Literal strings: Windows paths contain backslashes.
+            "[identity]\nname = \"desk\"\ncert = '{}'\nkey = '{}'\n",
             s(&cert_path),
             s(&key_path)
         ),
@@ -210,6 +211,8 @@ fn status_and_stop_report_not_running() {
     assert_eq!(code, 3, "{stderr}");
 }
 
+// systemd units are Linux-only.
+#[cfg(unix)]
 #[test]
 fn service_unit_runs_this_binary_with_config() {
     let home = Home::new("service");
@@ -233,8 +236,8 @@ fn json_output_is_not_polluted_by_logs() {
     let home = Home::new("logs");
     let out = Command::new(env!("CARGO_BIN_EXE_cross-control"))
         .args(["identity", "--json"])
-        .env("XDG_CONFIG_HOME", home.0.join("config"))
-        .env("XDG_RUNTIME_DIR", home.0.join("run"))
+        .env("CROSS_CONTROL_CONFIG_DIR", home.config_dir())
+        .env("CROSS_CONTROL_RUNTIME_DIR", home.0.join("run"))
         .env("RUST_LOG", "debug")
         .output()
         .unwrap();

@@ -16,7 +16,7 @@ all:
         cross_control_input_backend: none
         cross_control_service: false
         cross_control_environment:
-          XDG_RUNTIME_DIR: "{{ cc_root }}/run"
+          CROSS_CONTROL_RUNTIME_DIR: "{{ cc_root }}/run"
       hosts:
         left:
           cross_control_port: 24911

@@ -233,7 +233,7 @@ fn input_checks(backend: InputBackend) -> Vec<Check> {
     native_input_checks()
 }
 
-#[cfg(feature = "linux")]
+#[cfg(all(feature = "linux", target_os = "linux"))]
 fn native_input_checks() -> Vec<Check> {
     use cross_control_input::linux::capture::EvdevCapture;
     use cross_control_types::DeviceCapability;
@@ -323,7 +323,7 @@ fn native_input_checks() -> Vec<Check> {
     checks
 }
 
-#[cfg(not(feature = "linux"))]
+#[cfg(not(all(feature = "linux", target_os = "linux")))]
 fn native_input_checks() -> Vec<Check> {
     vec![Check::fail(
         "input",

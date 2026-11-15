@@ -85,8 +85,8 @@ jobs:
             build-args: "--workspace"
             test-args: "--workspace"
           - os: windows-latest
-            build-args: "--workspace --exclude cross-control-cli --exclude cross-control-tui-test"
-            test-args: "--workspace --exclude cross-control-cli --exclude cross-control-tui-test"
+            build-args: "--workspace"
+            test-args: "--workspace"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

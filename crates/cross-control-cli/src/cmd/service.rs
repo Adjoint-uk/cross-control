@@ -2,6 +2,7 @@
 //! service, using this binary's own path so the unit is always correct for
 //! wherever it was installed.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use cross_control_daemon::setup;
@@ -19,7 +20,16 @@ pub fn run(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<u8> {
         .config_path
         .as_ref()
         .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()));
-    let unit = unit_text(&exe, config.as_deref());
+    // Carry a directory override into the service, or it would run with a
+    // different identity and trust store than the one just configured.
+    let env: Vec<(&str, String)> = [setup::CONFIG_DIR_ENV, setup::RUNTIME_DIR_ENV]
+        .into_iter()
+        .filter_map(|var| {
+            let value = std::env::var(var).ok().filter(|v| !v.is_empty())?;
+            Some((var, value))
+        })
+        .collect();
+    let unit = unit_text(&exe, config.as_deref(), &env);
     match action {
         ServiceAction::Unit => {
             if ctx.json {
@@ -43,11 +53,19 @@ fn unit_path() -> PathBuf {
 }
 
 /// The systemd user unit that runs `exe start` (with `--config` if given).
-pub fn unit_text(exe: &Path, config: Option<&Path>) -> String {
+pub fn unit_text(exe: &Path, config: Option<&Path>, env: &[(&str, String)]) -> String {
     let mut exec = format!("{} start", systemd_quote(&exe.to_string_lossy()));
     if let Some(config) = config {
         exec.push_str(" --config ");
         exec.push_str(&systemd_quote(&config.to_string_lossy()));
+    }
+    let mut extra_env = String::new();
+    for (var, value) in env {
+        let _ = writeln!(
+            extra_env,
+            "Environment={}",
+            systemd_quote(&format!("{var}={value}"))
+        );
     }
     format!(
         "\
@@ -67,7 +85,7 @@ ExecStart={exec}
 Restart=on-failure
 RestartSec=5
 Environment=RUST_LOG=info
-
+{extra_env}
 [Install]
 WantedBy=default.target
 "
@@ -160,17 +178,19 @@ mod tests {
         let unit = unit_text(
             Path::new("/opt/cross control/bin/cross-control"),
             Some(Path::new("/etc/cross-control/100%.toml")),
+            &[("CROSS_CONTROL_CONFIG_DIR", "/srv/cc dir".to_string())],
         );
         assert!(unit.contains(
             "ExecStart=\"/opt/cross control/bin/cross-control\" start \
              --config \"/etc/cross-control/100%%.toml\""
         ));
         assert!(unit.contains("WantedBy=default.target"));
+        assert!(unit.contains("Environment=\"CROSS_CONTROL_CONFIG_DIR=/srv/cc dir\"\n"));
     }
 
     #[test]
     fn unit_without_config_has_no_config_flag() {
-        let unit = unit_text(Path::new("/usr/bin/cross-control"), None);
+        let unit = unit_text(Path::new("/usr/bin/cross-control"), None, &[]);
         assert!(unit.contains("ExecStart=\"/usr/bin/cross-control\" start\n"));
     }
 }

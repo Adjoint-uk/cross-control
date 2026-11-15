@@ -10,7 +10,8 @@ homepage.workspace = true
 authors.workspace = true
 
 [features]
-linux = ["evdev"]
+# Native Linux backend (evdev/uinput). Has no effect on other targets.
+linux = ["dep:evdev"]
 mock = []
 
 [dependencies]
@@ -20,7 +21,9 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
-evdev = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = { workspace = true, optional = true }

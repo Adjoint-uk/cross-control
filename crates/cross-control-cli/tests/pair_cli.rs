@@ -59,7 +59,11 @@ async fn run_pair(config_home: PathBuf, args: Vec<String>) -> Output {
         Command::new(env!("CARGO_BIN_EXE_cross-control"))
             .arg("pair")
             .args(args)
-            .env("XDG_CONFIG_HOME", &config_home)
+            .env(
+                "CROSS_CONTROL_CONFIG_DIR",
+                config_home.join("cross-control"),
+            )
+            .env("CROSS_CONTROL_RUNTIME_DIR", config_home.join("run"))
             .output()
             .expect("run cross-control pair")
     })
