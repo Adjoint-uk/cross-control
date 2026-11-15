@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use cross_control_certgen::GeneratedCert;
 use cross_control_types::MachineId;
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -163,7 +163,7 @@ fn restrict_to_owner(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(meta) = std::fs::metadata(path) {
             if meta.permissions().mode() & 0o077 != 0 {
-                warn!(path = %path.display(), "private key was readable by others; restricting to owner");
+                tracing::warn!(path = %path.display(), "private key was readable by others; restricting to owner");
                 let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
             }
         }
