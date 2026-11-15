@@ -33,7 +33,7 @@ cross-control takes a different approach:
 - **Zero-config discovery** - Machines find each other automatically via mDNS/DNS-SD.
 - **Clipboard sharing** - Text, HTML, and images synced when you switch machines.
 - **Position-based switching** - Move your cursor to the screen edge to switch, just like macOS Universal Control.
-- **Certificate pinning** - SSH-style trust-on-first-use authentication. No central authority needed.
+- **Mutual authentication** - every peer proves it holds the key for a pinned certificate fingerprint; SSH-style pairing, no central authority.
 - **Multi-machine** - Star topology supports any number of machines.
 - **Permissive license** - MIT OR Apache-2.0. Use it anywhere.
 
@@ -88,13 +88,31 @@ Set up two Linux machines on the same network:
 cargo install --path crates/cross-control-cli
 ```
 
-### 2. Generate certificates on both machines
+### 2. Pair the machines
+
+Every connection is mutually authenticated: each machine has a self-signed
+certificate, and a peer is accepted only if its certificate fingerprint is
+trusted for the name it announces. Nothing is trusted by default.
+
+Start the daemon on both machines (`cross-control start`), then show the
+laptop's fingerprint on the laptop:
 
 ```bash
-cross-control generate-cert --output ~/.config/cross-control/
+cross-control trust          # prints this machine's name and fingerprint
 ```
 
-Note the fingerprint printed for each machine.
+On the workstation, pair with it and check the fingerprint matches:
+
+```bash
+cross-control pair 192.168.1.20 --name laptop
+```
+
+`pair` records the laptop in `~/.config/cross-control/known_peers` and prints
+a `cross-control trust add "workstation" SHA256:…` command: run it on the
+laptop so it trusts the workstation back. Restart both daemons to connect.
+
+Alternatively, pin fingerprints directly with `fingerprint = "SHA256:…"` in
+the `[[screens]]` entries below.
 
 ### 3. Create configuration
 
@@ -109,7 +127,6 @@ name = "workstation"
 name = "laptop"
 address = "192.168.1.20:24800"
 position = "Right"
-fingerprint = "SHA256:..."  # laptop's fingerprint
 ```
 
 **Machine B** (right laptop at 192.168.1.20):
@@ -123,7 +140,6 @@ name = "laptop"
 name = "workstation"
 address = "192.168.1.10:24800"
 position = "Left"
-fingerprint = "SHA256:..."  # workstation's fingerprint
 ```
 
 ### 4. Start the daemon on both machines

@@ -88,14 +88,14 @@ On networks where mDNS is blocked (some enterprise WiFi, captive portals) set `[
 
 The fastest way to get two machines talking. Skip if your network blocks mDNS — use the static-config flow below instead.
 
-### 1. Install on both machines and generate certs
+### 1. Install on both machines
 
 ```bash
 cargo install --path crates/cross-control-cli
-cross-control generate-cert --output ~/.config/cross-control/
+cross-control trust      # creates this machine's certificate and prints its fingerprint
 ```
 
-Write down the SHA-256 fingerprint each machine prints. You will compare them in step 3 below.
+Write down the SHA-256 fingerprint each machine prints. You will compare them in step 4 below.
 
 ### 2. Minimal config on each machine
 
@@ -115,7 +115,6 @@ screen_height = 1080
 name = "laptop"
 position = "Right"
 # no `address =` — discovery fills it in
-# `fingerprint =` is optional; if set, refuses connections that don't match
 ```
 
 ### 3. Start both daemons
@@ -124,24 +123,25 @@ position = "Right"
 cross-control start
 ```
 
-Within a few seconds each daemon should report finding the other. Confirm:
+Each daemon finds the other over mDNS, but **refuses it**: nothing is trusted until you pair. The log says so, and tells you the command to run.
+
+### 4. Pair (once)
+
+On the workstation, connect to the laptop and compare the fingerprint it shows with the one you wrote down for the laptop in step 1:
 
 ```bash
-cross-control status
+cross-control pair laptop.local --name laptop
 ```
 
-### 4. First-contact fingerprint check (TOFU)
+If it matches, confirm. The laptop is recorded in `~/.config/cross-control/known_peers`, and `pair` prints the command that makes the laptop trust the workstation back — run it on the laptop:
 
-Each daemon's mDNS advertisement carries the local cert fingerprint in the `fp` TXT record. When two daemons first see each other, compare the discovered fingerprints to the ones you wrote down in step 1. If they match, pin them by adding to the config:
-
-```toml
-[[screens]]
-name = "laptop"
-position = "Right"
-fingerprint = "ab12cd34..."   # what you verified
+```bash
+cross-control trust add "workstation" SHA256:12:34:…
 ```
 
-Once pinned, **any future certificate mismatch refuses the connection** with an SSH-style identity-changed error. This is the trust-on-first-use model — see [ADR 0002](adr/0002-tofu-pairing.md) for the full threat model and what TOFU does *not* protect against.
+Restart both daemons (`cross-control stop && cross-control start`) and they connect. From now on a peer presenting a different certificate under a trusted name is refused — the equivalent of SSH's "REMOTE HOST IDENTIFICATION HAS CHANGED". `cross-control trust` lists who is trusted; `cross-control trust remove <name>` revokes.
+
+You can instead pin fingerprints in `config.toml` (`fingerprint = "SHA256:…"` on a `[[screens]]` entry), or, on a network you fully control, set `[security] trust_on_first_use = true` to accept and remember the first certificate each name presents. See [ADR 0002](adr/0002-tofu-pairing.md) for the threat model.
 
 ### 5. Use it
 
@@ -151,13 +151,13 @@ Move the cursor to the configured edge. Press **Ctrl+Shift+Escape** to release.
 
 Use this when mDNS is blocked, or when you want the network address fixed. This example sets up a workstation (left) and laptop (right).
 
-### 1. Generate certificates on both machines
+### 1. Show each machine's fingerprint
 
 ```bash
-cross-control generate-cert --output ~/.config/cross-control/
+cross-control trust
 ```
 
-Note the fingerprint printed on each machine. You'll use the *other* machine's fingerprint in your config.
+Note the fingerprint printed on each machine. Each machine pins the *other* machine's fingerprint in its config below (or use `cross-control pair`, as in the mDNS guide above).
 
 ### 2. Create configuration
 

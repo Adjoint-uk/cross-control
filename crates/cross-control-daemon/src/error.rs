@@ -25,6 +25,9 @@ pub enum DaemonError {
     #[error("discovery error: {0}")]
     Discovery(#[from] cross_control_discovery::DiscoveryError),
 
+    #[error("peer not authorized: {0}")]
+    Untrusted(#[from] crate::trust::TrustError),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

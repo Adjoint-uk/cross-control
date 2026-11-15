@@ -26,7 +26,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use cross_control_daemon::config::{Config, DaemonConfig, IdentityConfig, ScreenConfig};
+use cross_control_daemon::config::{
+    Config, DaemonConfig, IdentityConfig, ScreenConfig, SecurityConfig,
+};
 use cross_control_daemon::{Daemon, DaemonEvent, DaemonStatus};
 use cross_control_input::mock::{MockCapture, MockEmulation, MockEmulationHandle};
 use cross_control_input::InputEmulation;
@@ -145,8 +147,14 @@ async fn run(real: bool) -> Result<(), Box<dyn std::error::Error>> {
             name: "machine-b".to_string(),
             address: Some(addr_b.to_string()),
             position: Position::Right,
-            fingerprint: None,
+            // Each side pins the other's certificate: connections are
+            // mutually authenticated.
+            fingerprint: Some(cert_b.fingerprint.clone()),
         }],
+        security: SecurityConfig {
+            trust_on_first_use: false,
+            known_peers: Some(std::env::temp_dir().join("cross-control-loopback.known_peers")),
+        },
         ..Config::default()
     };
     let config_b = Config {
@@ -163,8 +171,12 @@ async fn run(real: bool) -> Result<(), Box<dyn std::error::Error>> {
             name: "machine-a".to_string(),
             address: None,
             position: Position::Left,
-            fingerprint: None,
+            fingerprint: Some(cert_a.fingerprint.clone()),
         }],
+        security: SecurityConfig {
+            trust_on_first_use: false,
+            known_peers: Some(std::env::temp_dir().join("cross-control-loopback.known_peers")),
+        },
         ..Config::default()
     };
 

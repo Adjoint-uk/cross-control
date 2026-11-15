@@ -52,8 +52,10 @@ max_size = 10485760  # 10 MiB
 #
 # `address` is optional: with mDNS discovery on, peers are found automatically
 # and you only need `position`. Set `address` to pin a static host (or on
-# networks without multicast). `fingerprint` pins the peer's TLS cert (TOFU) —
-# fill it in after the first pairing; see `cross-control status` for your own.
+# networks without multicast). `fingerprint` pins the peer's TLS cert; the
+# alternative is `cross-control pair` / `cross-control trust add`, which record
+# trusted peers in the known_peers file instead. A peer is refused unless it is
+# trusted one way or the other. `cross-control trust` shows your own.
 
 [[screens]]
 name = "laptop-right"
@@ -76,3 +78,15 @@ position = "Right"
 # screen = "laptop-right"
 # neighbor = "tablet"
 # position = "Right"
+
+# ── Peer authentication ──────────────────────────────────────────────────
+#
+# Every connection is mutually authenticated with TLS certificates. A peer
+# is accepted when its (name, fingerprint) is pinned above or listed in the
+# known_peers file. Manage that file with `cross-control trust`.
+#
+# [security]
+# trust_on_first_use = false   # true: accept and remember unknown peers.
+#                              # Anyone who can reach this machine first wins:
+#                              # only for networks you fully control.
+# known_peers = "/home/me/.config/cross-control/known_peers"   # default
