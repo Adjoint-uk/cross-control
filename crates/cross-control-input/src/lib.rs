@@ -15,10 +15,18 @@ pub mod error;
 #[cfg(all(feature = "linux", target_os = "linux"))]
 pub mod linux;
 
+#[cfg(all(feature = "windows", windows))]
+pub mod windows;
+
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 
 pub mod null;
+
+// Pure Windows input translation; compiled everywhere so it is tested on
+// every platform.
+#[cfg(any(test, all(feature = "windows", windows)))]
+pub(crate) mod win32_map;
 
 pub use error::InputError;
 

@@ -40,7 +40,7 @@ cross_control_screen_adjacency: []
 #   - { width: 2560, height: 1440, x: 0, y: 0 }
 cross_control_monitors: []
 
-# Input backend: auto | evdev | none ("none" runs headless, e.g. in CI).
+# Input backend: auto | evdev | windows | none ("none" runs headless, e.g. in CI).
 cross_control_input_backend: auto
 cross_control_release_hotkey: [LeftCtrl, LeftShift, Escape]
 

@@ -6,6 +6,7 @@
 
 mod cmd;
 mod exit;
+mod process;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

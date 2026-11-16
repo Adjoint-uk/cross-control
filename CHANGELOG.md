@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Windows input backend (preview)
+
+- **Native Windows backend** (`[input] backend = "auto"` or `"windows"`):
+  - capture uses low-level keyboard and mouse hooks on a dedicated thread;
+  - local input is swallowed while you control another machine, and the cursor is parked mid-screen so motion never stalls at an edge;
+  - emulation uses `SendInput` with layout-independent scan codes;
+  - input the daemon injects itself is ignored, so being controlled never echoes back;
+  - the process is per-monitor DPI aware.
+- The key and mouse translation (`win32_map`) is pure code, unit-tested on every platform. It covers every named key, the Pause/Num Lock scan-code collision, the fake Ctrl that AltGr sends, unknown keys, extra mouse buttons, and the wheel in both axes.
+- Windows-only tests check that the hooks install and shut down, that injected input is not captured, and that injected motion moves the cursor. On a runner without a desktop they skip instead of failing.
+- `doctor` reports the Windows backend and its limits (no access to elevated windows or the secure desktop).
+- `status` and `stop` now work on Windows. Checking whether the daemon is running no longer depends on Linux's `/proc`.
+- [docs/windows.md](docs/windows.md) covers how it works, setup and limits.
+
 ### Changed — the whole workspace builds and tests on Windows
 
 - **The Linux input backend now compiles only on Linux targets.** Before, `evdev` was gated only by the `linux` feature, which is on by default in the CLI, so the CLI could not compile for Windows at all, and Windows CI excluded it. CI now builds and tests every crate on Windows. On Windows the daemon runs with `[input] backend = "none"` until a native backend lands; any other setting gives a clear configuration error.

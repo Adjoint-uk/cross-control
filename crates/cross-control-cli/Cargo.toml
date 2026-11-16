@@ -14,8 +14,10 @@ name = "cross-control"
 path = "src/main.rs"
 
 [features]
-default = ["linux"]
+# Each native backend only takes effect on its own platform.
+default = ["linux", "windows"]
 linux = ["cross-control-daemon/linux"]
+windows = ["cross-control-daemon/windows"]
 
 [dependencies]
 cross-control-daemon = { workspace = true }

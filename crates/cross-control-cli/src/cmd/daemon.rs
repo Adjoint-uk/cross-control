@@ -84,7 +84,15 @@ fn input_backends(backend: InputBackend) -> anyhow::Result<Backends> {
                 Vec::new(),
             ))
         }
-        InputBackend::Auto | InputBackend::Evdev => native_backends(),
+        InputBackend::Auto => native_backends(),
+        InputBackend::Evdev if cfg!(all(feature = "linux", target_os = "linux")) => {
+            native_backends()
+        }
+        InputBackend::Windows if cfg!(all(feature = "windows", windows)) => native_backends(),
+        other => Err(cross_control_daemon::DaemonError::Config(format!(
+            "input backend {other:?} is not available on this platform"
+        ))
+        .into()),
     }
 }
 
@@ -105,10 +113,27 @@ fn native_backends() -> anyhow::Result<Backends> {
     ))
 }
 
-#[cfg(not(all(feature = "linux", target_os = "linux")))]
+#[cfg(all(feature = "windows", windows))]
+#[allow(clippy::unnecessary_wraps)] // same signature as the fallible fallback
+fn native_backends() -> anyhow::Result<Backends> {
+    use cross_control_input::windows::{
+        capture::WindowsCapture, devices, emulation::WindowsEmulation,
+    };
+
+    Ok((
+        Box::new(WindowsCapture::new()),
+        Box::new(WindowsEmulation::new()),
+        devices(),
+    ))
+}
+
+#[cfg(not(any(
+    all(feature = "linux", target_os = "linux"),
+    all(feature = "windows", windows)
+)))]
 fn native_backends() -> anyhow::Result<Backends> {
     Err(cross_control_daemon::DaemonError::Config(
-        "no native input backend for this platform yet (Linux only); \
+        "no native input backend for this platform; \
          set [input] backend = \"none\" to run without input"
             .to_string(),
     )
@@ -148,7 +173,7 @@ fn running_pid() -> Option<u32> {
     let pid = std::fs::read_to_string(&pid_path)
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())?;
-    if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+    if crate::process::is_alive(pid) {
         Some(pid)
     } else {
         let _ = std::fs::remove_file(&pid_path);
@@ -239,13 +264,8 @@ fn print_peer_row(name: &str, state: &str, latency: &str, address: &str) {
 /// Ask the running daemon to stop. Exit code 3 if it is not running.
 pub fn stop(ctx: &Ctx) -> anyhow::Result<u8> {
     let pid = running_pid().ok_or(exit::NotRunning)?;
-    tracing::info!(pid, "sending SIGTERM to daemon");
-    let status = std::process::Command::new("kill")
-        .args(["-s", "TERM", &pid.to_string()])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to send SIGTERM to PID {pid}");
-    }
+    tracing::info!(pid, "stopping the daemon");
+    crate::process::terminate(pid)?;
     if ctx.json {
         Ctx::print_json(&json!({ "stopped": pid }));
     } else {

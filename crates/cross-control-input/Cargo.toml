@@ -13,6 +13,8 @@ authors.workspace = true
 # Native Linux backend (evdev/uinput). Has no effect on other targets.
 linux = ["dep:evdev"]
 mock = []
+# Native Windows backend (low-level hooks/SendInput). No effect elsewhere.
+windows = ["dep:windows-sys"]
 
 [dependencies]
 cross-control-types = { workspace = true }
@@ -27,3 +29,6 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, optional = true }

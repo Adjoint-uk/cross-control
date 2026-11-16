@@ -4,7 +4,6 @@
 //! usual problems.
 
 use std::net::UdpSocket;
-use std::path::Path;
 
 use cross_control_daemon::config::{Config, InputBackend};
 use cross_control_daemon::setup;
@@ -301,7 +300,7 @@ fn native_input_checks() -> Vec<Check> {
     }
 
     // uinput, for receiving input from peers.
-    let uinput = Path::new("/dev/uinput");
+    let uinput = std::path::Path::new("/dev/uinput");
     let uinput_fix = "sudo modprobe uinput\n\
          echo 'KERNEL==\"uinput\", MODE=\"0660\", GROUP=\"input\"' | sudo tee /etc/udev/rules.d/99-uinput.rules\n\
          sudo udevadm control --reload-rules && sudo udevadm trigger";
@@ -323,7 +322,25 @@ fn native_input_checks() -> Vec<Check> {
     checks
 }
 
-#[cfg(not(all(feature = "linux", target_os = "linux")))]
+#[cfg(all(feature = "windows", windows))]
+fn native_input_checks() -> Vec<Check> {
+    vec![
+        Check::ok(
+            "input",
+            "Windows low-level hooks and SendInput (no device permissions needed)",
+        ),
+        Check::warn(
+            "input",
+            "input cannot reach elevated (administrator) windows, UAC prompts or the lock screen",
+            "run the programs you control without elevation; this is a Windows limit for user processes",
+        ),
+    ]
+}
+
+#[cfg(not(any(
+    all(feature = "linux", target_os = "linux"),
+    all(feature = "windows", windows)
+)))]
 fn native_input_checks() -> Vec<Check> {
     vec![Check::fail(
         "input",
@@ -352,7 +369,7 @@ fn daemon_running() -> bool {
     std::fs::read_to_string(setup::pid_file_path())
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
-        .is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists())
+        .is_some_and(crate::process::is_alive)
 }
 
 fn clipboard_check() -> Check {
