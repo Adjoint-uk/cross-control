@@ -274,6 +274,8 @@ pub enum InputBackend {
     Auto,
     /// evdev capture and uinput emulation (Linux).
     Evdev,
+    /// Low-level hooks and `SendInput` (Windows).
+    Windows,
     /// Touch no input devices: the daemon still connects, authenticates and
     /// syncs the clipboard, but neither shares nor receives keyboard and
     /// mouse. For smoke-testing deployments (containers, CI) and headless

@@ -20,7 +20,7 @@ cross-control takes a different approach:
 |---|---|---|---|---|---|---|
 | **Active** | Dead (2022) | Slow | Yes | Yes | Yes | **Yes** |
 | **Wayland** | No | Partial | Partial | Yes | Yes | **Native** |
-| **Windows** | Yes | Yes | Yes | No | Yes | **Planned** |
+| **Windows** | Yes | Yes | Yes | No | Yes | **Preview** |
 | **Protocol** | Synergy v1 | Synergy v1 | Proprietary | Custom | Custom | **QUIC** |
 | **Encryption** | Optional TLS | Optional TLS | TLS | TLS | None | **TLS 1.3 (always)** |
 | **Discovery** | No | No | No | No | No | **mDNS** |
@@ -39,10 +39,11 @@ cross-control takes a different approach:
 
 ## Requirements
 
-- **Linux** (x86_64 or aarch64) — Windows support is planned
-- **Rust 1.75+** (if building from source)
-- User must be in the `input` group to access keyboard/mouse devices
-- `/dev/uinput` must be accessible for virtual device emulation
+- **Linux** (x86_64 or aarch64)
+- **Windows** 10/11 — preview: the native backend is built and unit-tested, but not yet validated on real hardware (see [docs/windows.md](docs/windows.md))
+- **Rust 1.89+** (if building from source)
+- Linux: user in the `input` group to access keyboard/mouse devices
+- Linux: `/dev/uinput` accessible for virtual device emulation
 
 ## Installation
 
