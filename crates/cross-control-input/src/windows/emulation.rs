@@ -32,7 +32,7 @@ impl WindowsEmulation {
     }
 }
 
-fn keyboard_input(event: &InputEvent) -> Option<INPUT> {
+pub(super) fn keyboard_input(event: &InputEvent) -> Option<INPUT> {
     let InputEvent::Key { code, state } = event else {
         return None;
     };
@@ -80,7 +80,7 @@ fn mouse(dx: i32, dy: i32, mouse_data: u32, flags: u32) -> INPUT {
     }
 }
 
-fn mouse_input(event: &InputEvent) -> Option<INPUT> {
+pub(super) fn mouse_input(event: &InputEvent) -> Option<INPUT> {
     match event {
         InputEvent::MouseMove { dx, dy } => Some(mouse(*dx, *dy, 0, MOUSEEVENTF_MOVE)),
         InputEvent::MouseMoveAbsolute { x, y } => {
@@ -215,6 +215,17 @@ mod tests {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 
+    /// Skip without a desktop unless `CROSS_CONTROL_REQUIRE_DESKTOP` is set.
+    fn desktop_unavailable(reason: &str) {
+        let required =
+            std::env::var_os("CROSS_CONTROL_REQUIRE_DESKTOP").is_some_and(|v| !v.is_empty());
+        assert!(
+            !required,
+            "interactive desktop required but unavailable: {reason}"
+        );
+        eprintln!("skipping: {reason}");
+    }
+
     fn cursor() -> POINT {
         let mut p = POINT { x: 0, y: 0 };
         // SAFETY: valid, writable POINT.
@@ -226,7 +237,7 @@ mod tests {
     async fn relative_motion_moves_the_cursor() {
         // SAFETY: plain call.
         if unsafe { SetCursorPos(200, 200) } == 0 {
-            eprintln!("skipping: no interactive desktop");
+            desktop_unavailable("cannot move the cursor");
             return;
         }
         let mut emulation = WindowsEmulation::new();
@@ -234,7 +245,7 @@ mod tests {
             .inject(VirtualDeviceId(1), InputEvent::MouseMove { dx: 40, dy: 0 })
             .await
         {
-            eprintln!("skipping: SendInput unavailable here: {e}");
+            desktop_unavailable(&format!("SendInput unavailable here: {e}"));
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

@@ -15,12 +15,13 @@ use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetCursorPos, GetMessageW, GetSystemMetrics, PostThreadMessageW, SetCursorPos,
     SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED,
-    LLKHF_INJECTED, LLKHF_UP, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, SM_CXSCREEN, SM_CYSCREEN,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_QUIT,
+    LLKHF_INJECTED, LLKHF_UP, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, SM_CXSCREEN, SM_CXVIRTUALSCREEN,
+    SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WH_KEYBOARD_LL,
+    WH_MOUSE_LL, WM_QUIT,
 };
 
 use super::{KEYBOARD, MOUSE};
-use crate::win32_map::{key_from_hook, mouse_event_from_hook, WM_MOUSEMOVE};
+use crate::win32_map::{key_from_hook, mouse_event_from_hook, normalize_position, WM_MOUSEMOVE};
 use crate::{InputCapture, InputError};
 
 /// State shared between the async side and the hook thread.
@@ -259,13 +260,32 @@ fn hook_thread(
     debug!("input hook thread stopped");
 }
 
+/// Whether a hooked event should be captured. Injected input (including
+/// our own emulation) is ignored so being controlled never echoes back. With
+/// the `test-support` feature, injected input carrying the test marker is
+/// accepted, so tests can drive real capture.
+fn accepts(injected: bool, extra_info: usize) -> bool {
+    if !injected {
+        return true;
+    }
+    #[cfg(feature = "test-support")]
+    {
+        extra_info == super::test_support::MARKER
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = extra_info;
+        false
+    }
+}
+
 /// Low-level keyboard hook. Returns non-zero to swallow the event.
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION.cast_signed() {
         // SAFETY: for HC_ACTION, lparam points to a KBDLLHOOKSTRUCT that is
         // valid for the duration of the call.
         let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-        if kb.flags & LLKHF_INJECTED == 0 {
+        if accepts(kb.flags & LLKHF_INJECTED != 0, kb.dwExtraInfo) {
             let swallow = CTX.with(|ctx| {
                 let ctx = ctx.borrow();
                 let Some(ctx) = ctx.as_ref() else {
@@ -298,7 +318,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         // SAFETY: for HC_ACTION, lparam points to an MSLLHOOKSTRUCT that is
         // valid for the duration of the call.
         let ms = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
-        if ms.flags & LLMHF_INJECTED == 0 {
+        if accepts(ms.flags & LLMHF_INJECTED != 0, ms.dwExtraInfo) {
             let message = u32::try_from(wparam).unwrap_or(0);
             let swallow = CTX.with(|ctx| {
                 let mut ctx = ctx.borrow_mut();
@@ -307,8 +327,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 };
                 let grabbed = ctx.shared.grabbed.load(Ordering::Relaxed);
                 if message == WM_MOUSEMOVE {
-                    if let Some((dx, dy)) = motion(ctx, ms.pt, grabbed) {
-                        ctx.emit(MOUSE, InputEvent::MouseMove { dx, dy });
+                    if let Some(event) = motion(ctx, ms.pt, grabbed) {
+                        ctx.emit(MOUSE, event);
                     }
                 } else if let Some(event) = mouse_event_from_hook(message, ms.mouseData) {
                     ctx.emit(MOUSE, event);
@@ -324,35 +344,53 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
-/// The relative motion for a reported cursor position, or `None` if there
-/// is none to report.
-fn motion(ctx: &mut HookCtx, pt: POINT, grabbed: bool) -> Option<(i32, i32)> {
+/// The event for a reported cursor position, or `None` if there is nothing
+/// to report.
+///
+/// - Grabbed: relative motion from the park point (the swallowed event left
+///   the cursor there), forwarded to the controlled machine.
+/// - Not grabbed: the absolute position, as a fraction of the virtual
+///   desktop. Windows clamps the cursor at the screen edges, so relative
+///   deltas computed from positions would be zero while pushing against an
+///   edge and the daemon's cursor could never catch up; the absolute position
+///   keeps it exactly where the real cursor is.
+fn motion(ctx: &mut HookCtx, pt: POINT, grabbed: bool) -> Option<InputEvent> {
     if ctx.shared.resync.swap(false, Ordering::Relaxed) {
         ctx.last = None;
     }
-    let delta = if grabbed {
-        // The swallowed event leaves the cursor parked, so every position is
-        // measured from the park point.
+    if grabbed {
         let park = POINT {
             x: ctx.shared.park_x.load(Ordering::Relaxed),
             y: ctx.shared.park_y.load(Ordering::Relaxed),
         };
-        (pt.x - park.x, pt.y - park.y)
-    } else {
-        let prev = ctx.last.replace(pt)?;
-        (pt.x - prev.x, pt.y - prev.y)
+        let (dx, dy) = (pt.x - park.x, pt.y - park.y);
+        if (dx, dy) == (0, 0) {
+            return None;
+        }
+        if dx.abs() > 10_000 || dy.abs() > 10_000 {
+            warn!(dx, dy, "ignoring implausible mouse jump");
+            return None;
+        }
+        return Some(InputEvent::MouseMove { dx, dy });
+    }
+    if ctx
+        .last
+        .replace(pt)
+        .is_some_and(|prev| prev.x == pt.x && prev.y == pt.y)
+    {
+        return None;
+    }
+    // SAFETY: plain metric queries (cheap; the desktop can change at runtime).
+    let (left, top, width, height) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
     };
-    if delta == (0, 0) {
-        return None;
-    }
-    if !grabbed {
-        return Some(delta);
-    }
-    if delta.0.abs() > 10_000 || delta.1.abs() > 10_000 {
-        warn!(?delta, "ignoring implausible mouse jump");
-        return None;
-    }
-    Some(delta)
+    let (x, y) = normalize_position(pt.x, pt.y, left, top, width, height);
+    Some(InputEvent::MouseMoveAbsolute { x, y })
 }
 
 #[cfg(test)]
@@ -362,6 +400,17 @@ mod tests {
     use crate::InputEmulation;
     use cross_control_types::{KeyCode, VirtualDeviceId};
 
+    /// Skip without a desktop unless `CROSS_CONTROL_REQUIRE_DESKTOP` is set.
+    fn desktop_unavailable(reason: &str) {
+        let required =
+            std::env::var_os("CROSS_CONTROL_REQUIRE_DESKTOP").is_some_and(|v| !v.is_empty());
+        assert!(
+            !required,
+            "interactive desktop required but unavailable: {reason}"
+        );
+        eprintln!("skipping: {reason}");
+    }
+
     /// Hooks need an interactive desktop; skip (rather than fail) on a
     /// runner without one.
     async fn started() -> Option<(WindowsCapture, mpsc::Receiver<CapturedEvent>)> {
@@ -370,7 +419,7 @@ mod tests {
         match capture.start(tx).await {
             Ok(()) => Some((capture, rx)),
             Err(e) => {
-                eprintln!("skipping: cannot install hooks here: {e}");
+                desktop_unavailable(&format!("cannot install hooks here: {e}"));
                 None
             }
         }
@@ -407,7 +456,7 @@ mod tests {
             InputEvent::MouseMove { dx: -3, dy: 0 },
         ] {
             if let Err(e) = emulation.inject(device, event).await {
-                eprintln!("skipping: SendInput unavailable here: {e}");
+                desktop_unavailable(&format!("SendInput unavailable here: {e}"));
                 capture.shutdown().await.unwrap();
                 return;
             }

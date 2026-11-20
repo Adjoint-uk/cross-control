@@ -19,6 +19,8 @@
 
 pub mod capture;
 pub mod emulation;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 use std::sync::Once;
 
