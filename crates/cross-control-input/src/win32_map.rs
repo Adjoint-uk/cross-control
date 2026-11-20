@@ -256,6 +256,28 @@ pub fn mouse_event_from_hook(message: u32, mouse_data: u32) -> Option<InputEvent
     }
 }
 
+/// A cursor position as a fraction (0.0..=1.0) of the virtual desktop whose
+/// top-left is (`left`, `top`) and size `width` x `height` (as reported by
+/// `GetSystemMetrics(SM_*VIRTUALSCREEN)`). The last pixel maps to 1.0.
+#[must_use]
+pub fn normalize_position(
+    x: i32,
+    y: i32,
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+) -> (f64, f64) {
+    let frac = |v: i32, origin: i32, size: i32| {
+        if size <= 1 {
+            0.0
+        } else {
+            (f64::from(v - origin) / f64::from(size - 1)).clamp(0.0, 1.0)
+        }
+    };
+    (frac(x, left, width), frac(y, top, height))
+}
+
 /// `MOUSEINPUT::mouseData` for a scroll of `amount` detents in `direction`.
 #[must_use]
 pub fn wheel_data(direction: ScrollDirection, amount: f64) -> i32 {
@@ -424,6 +446,21 @@ mod tests {
             })
         );
         assert_eq!(mouse_event_from_hook(WM_MOUSEMOVE, 0), None);
+    }
+
+    #[test]
+    fn positions_normalize_over_the_virtual_desktop() {
+        // Single 1920x1080 screen.
+        assert_eq!(normalize_position(0, 0, 0, 0, 1920, 1080), (0.0, 0.0));
+        assert_eq!(normalize_position(1919, 1079, 0, 0, 1920, 1080), (1.0, 1.0));
+        // A monitor left of the primary gives a negative origin.
+        let (x, _) = normalize_position(-1920, 500, -1920, 0, 3840, 1080);
+        assert!(x.abs() < f64::EPSILON);
+        let (x, _) = normalize_position(1919, 500, -1920, 0, 3840, 1080);
+        assert!((x - 1.0).abs() < f64::EPSILON);
+        // Out-of-range input is clamped; a degenerate desktop is safe.
+        assert_eq!(normalize_position(5000, -5, 0, 0, 1920, 1080), (1.0, 0.0));
+        assert_eq!(normalize_position(3, 3, 0, 0, 1, 1), (0.0, 0.0));
     }
 
     #[test]

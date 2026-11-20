@@ -93,3 +93,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build ${{ matrix.build-args }}
       - run: cargo test ${{ matrix.test-args }}
+        env:
+          # The Windows runner has an interactive desktop: tests that need
+          # one must run there, not skip.
+          CROSS_CONTROL_REQUIRE_DESKTOP: ${{ matrix.os == 'windows-latest' && '1' || '' }}

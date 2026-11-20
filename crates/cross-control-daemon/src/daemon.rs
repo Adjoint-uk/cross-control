@@ -931,8 +931,13 @@ impl Daemon {
             return;
         }
 
-        // If we're controlling a remote, forward the event.
+        // If we're controlling a remote, forward the event. Absolute
+        // positions describe this machine's own cursor (some backends report
+        // them while not grabbed) and mean nothing to the peer.
         if let Some(peer_id) = self.controlling {
+            if matches!(captured.event, InputEvent::MouseMoveAbsolute { .. }) {
+                return;
+            }
             let msg = InputMessage {
                 device_id: captured.device_id,
                 timestamp_us: captured.timestamp_us,
@@ -949,13 +954,37 @@ impl Daemon {
             return;
         }
 
-        // Track the virtual cursor for barrier detection.
-        if let InputEvent::MouseMove { dx, dy } = &captured.event {
-            self.move_cursor(*dx, *dy);
+        // Track the virtual cursor for barrier detection: relative motion
+        // (evdev), or the real cursor's absolute position (Windows).
+        let moved = match &captured.event {
+            InputEvent::MouseMove { dx, dy } => {
+                self.move_cursor(*dx, *dy);
+                true
+            }
+            InputEvent::MouseMoveAbsolute { x, y } => {
+                self.place_cursor_fraction(*x, *y);
+                true
+            }
+            _ => false,
+        };
+        if moved {
             if let Some((peer_id, edge, position)) = self.check_barrier_crossing() {
                 self.initiate_control(peer_id, edge, position, false).await;
             }
         }
+    }
+
+    /// Put the virtual cursor at a fraction (0.0..=1.0) of the desktop on
+    /// each axis; 1.0 is the last pixel, so the edges map exactly.
+    fn place_cursor_fraction(&mut self, x: f64, y: f64) {
+        let (x1, y1) = self.screen_max();
+        #[allow(clippy::cast_possible_truncation)]
+        let along = |lo: i32, hi: i32, t: f64| {
+            let span = f64::from(hi.saturating_sub(lo));
+            lo.saturating_add((span * t.clamp(0.0, 1.0)).round() as i32)
+        };
+        self.cursor_x = along(self.screen.x, x1, x);
+        self.cursor_y = along(self.screen.y, y1, y);
     }
 
     /// Move the virtual cursor by a relative amount, saturating instead of

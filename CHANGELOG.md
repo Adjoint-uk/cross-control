@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — automated end-to-end testing on real Windows
+
+- **`windows_e2e` test** runs on CI's Windows runner:
+  - it uses real low-level hooks on one daemon and real `SendInput` on another, connected over QUIC with mutual TLS;
+  - it checks crossing at the real screen edge, mouse motion replayed by the receiver, and a captured key pressed system-wide by the receiver;
+  - it checks that the release hotkey takes control back and that no key is left pressed.
+- **The `test-support` feature** (tests only) lets the hooks accept synthetic input tagged with a marker. The daemon's own injections are untagged and stay ignored.
+- **On CI's Windows job, tests that need a desktop fail instead of skipping** (`CROSS_CONTROL_REQUIRE_DESKTOP`).
+
+### Fixed
+
+- **Windows: crossing could be impossible.** Capture turned cursor positions into relative deltas. Windows clamps the cursor at screen edges, so pushing against an edge gave a delta of zero. Once the daemon's tracked cursor was out of step with the real one (it was from the very first movement), it never reached the edge. When not controlling another machine, the backend now reports the real cursor's absolute position, which the daemon maps onto its layout and never forwards to peers.
+
 ### Added — Windows input backend (preview)
 
 - **Native Windows backend** (`[input] backend = "auto"` or `"windows"`):

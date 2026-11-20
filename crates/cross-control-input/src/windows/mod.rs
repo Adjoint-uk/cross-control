@@ -19,8 +19,15 @@
 
 pub mod capture;
 pub mod emulation;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 use std::sync::Once;
+
+/// Tests that move the real cursor or install hooks share one desktop; this
+/// keeps them from running at the same time and disturbing each other.
+#[cfg(test)]
+pub(crate) static DESKTOP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use cross_control_types::{DeviceCapability, DeviceId, DeviceInfo};
 

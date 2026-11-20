@@ -15,6 +15,10 @@ linux = ["dep:evdev"]
 mock = []
 # Native Windows backend (low-level hooks/SendInput). No effect elsewhere.
 windows = ["dep:windows-sys"]
+# Tests only: lets the Windows hooks accept synthetic input tagged with a
+# marker, so end-to-end tests can drive real capture. Never enable in
+# release builds.
+test-support = []
 
 [dependencies]
 cross-control-types = { workspace = true }

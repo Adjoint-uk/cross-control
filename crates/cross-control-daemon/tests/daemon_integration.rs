@@ -1747,3 +1747,60 @@ async fn test_redial_connects_once_peer_is_trusted() {
     .expect("B should accept A");
     pair.shutdown().await;
 }
+
+/// Backends that report the real cursor's absolute position (Windows, where
+/// the OS clamps the cursor at screen edges) cross as soon as the cursor
+/// reaches the edge, and absolute positions are never sent to the peer.
+#[tokio::test]
+async fn test_absolute_cursor_position_crosses_and_is_not_forwarded() {
+    let mut pair = setup_pair().await;
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.session_count >= 1
+    })
+    .await
+    .expect("handshake");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let absolute = |x: f64, y: f64| CapturedEvent {
+        device_id: DeviceId(2),
+        timestamp_us: 0,
+        event: InputEvent::MouseMoveAbsolute { x, y },
+    };
+    // Somewhere in the middle: no crossing.
+    pair.feed_a.send(absolute(0.5, 0.5)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(pair.status_a.borrow().controlling.is_none());
+
+    // At the right edge (machine-b is to the right): cross.
+    pair.feed_a.send(absolute(1.0, 0.25)).await.unwrap();
+    wait_for_status(&mut pair.status_a, Duration::from_secs(5), |s| {
+        s.controlling.is_some()
+    })
+    .await
+    .expect("reaching the edge by absolute position should cross");
+    wait_for_status(&mut pair.status_b, Duration::from_secs(5), |s| {
+        s.controlled_by.is_some()
+    })
+    .await
+    .expect("B controlled");
+
+    // While controlling, absolute positions stay local; relative motion goes.
+    pair.feed_a.send(absolute(0.3, 0.3)).await.unwrap();
+    pair.feed_a.send(mouse(5, 0)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let injected = pair.emulation_b.injected_events();
+    assert!(
+        injected
+            .iter()
+            .any(|e| matches!(e.event, InputEvent::MouseMove { .. })),
+        "relative motion should reach B: {injected:?}"
+    );
+    assert!(
+        !injected
+            .iter()
+            .any(|e| matches!(e.event, InputEvent::MouseMoveAbsolute { .. })),
+        "absolute positions must not be forwarded: {injected:?}"
+    );
+
+    pair.shutdown().await;
+}
