@@ -427,6 +427,7 @@ mod tests {
 
     #[tokio::test]
     async fn hooks_install_and_shut_down_cleanly() {
+        let _desktop = crate::windows::DESKTOP_LOCK.lock().await;
         let Some((mut capture, _rx)) = started().await else {
             return;
         };
@@ -438,6 +439,7 @@ mod tests {
     /// Being controlled must not echo: events we inject are not captured.
     #[tokio::test]
     async fn injected_input_is_not_captured() {
+        let _desktop = crate::windows::DESKTOP_LOCK.lock().await;
         let Some((mut capture, mut rx)) = started().await else {
             return;
         };

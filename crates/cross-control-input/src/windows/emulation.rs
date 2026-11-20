@@ -235,11 +235,13 @@ mod tests {
 
     #[tokio::test]
     async fn relative_motion_moves_the_cursor() {
+        let _desktop = crate::windows::DESKTOP_LOCK.lock().await;
         // SAFETY: plain call.
         if unsafe { SetCursorPos(200, 200) } == 0 {
             desktop_unavailable("cannot move the cursor");
             return;
         }
+        let before = cursor().x;
         let mut emulation = WindowsEmulation::new();
         if let Err(e) = emulation
             .inject(VirtualDeviceId(1), InputEvent::MouseMove { dx: 40, dy: 0 })
@@ -248,12 +250,19 @@ mod tests {
             desktop_unavailable(&format!("SendInput unavailable here: {e}"));
             return;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Input is processed asynchronously; give it up to a second.
         // Pointer acceleration may scale the distance, never the direction.
+        let mut after = cursor().x;
+        for _ in 0..50 {
+            if after > before {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            after = cursor().x;
+        }
         assert!(
-            cursor().x > 200,
-            "cursor did not move right: {:?}",
-            cursor().x
+            after > before,
+            "cursor did not move right: {before} -> {after}"
         );
     }
 
