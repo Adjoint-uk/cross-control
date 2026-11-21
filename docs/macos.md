@@ -51,7 +51,7 @@ upgrade, can require granting the permission again.
 
 ## Setup
 
-Releases after 0.2.0 include macOS downloads for Apple silicon and Intel.
+Releases from 0.3.0 include macOS downloads for Apple silicon and Intel.
 The install script picks the right one, checks it against the release's
 checksums, and installs it to `~/.local/bin`:
 

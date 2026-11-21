@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-21
+
+Adds macOS (preview), with downloads for Apple silicon and Intel, and start at login through launchd. All three desktop platforms now have downloads, an installer and an end-to-end test on CI.
+
 ### Added — macOS input backend (preview)
 
 - **Native macOS backend** (`[input] backend = "auto"` or `"macos"`):
