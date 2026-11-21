@@ -21,10 +21,17 @@ the checklist in [hardware-test.md](hardware-test.md).
 ## Setup
 
 ```powershell
-cargo install --path crates/cross-control-cli
-cross-control doctor
+irm https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.ps1 | iex
 cross-control identity
 ```
+
+The installer downloads the newest release and verifies its checksum. It
+installs `cross-control.exe` and `cross-controlw.exe` to
+`%LOCALAPPDATA%\Programs\cross-control` (added to your PATH), plus the
+[CrossControl module](../deploy/powershell/README.md), and runs
+`cross-control doctor`. No admin rights are needed. Add `-Autostart` to
+also start it at logon (see below). From source:
+`cargo install --path crates/cross-control-cli`.
 
 Configuration lives in `%APPDATA%\cross-control\` (or wherever
 `CROSS_CONTROL_CONFIG_DIR` points). Pairing, trust and layout work exactly as

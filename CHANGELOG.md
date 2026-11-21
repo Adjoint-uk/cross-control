@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — release pipeline
+
+- **Releases for Linux (x86_64, aarch64) and Windows (x86_64)** are built and published when a `vX.Y.Z` tag is pushed:
+  - archives contain the binaries, the docs and an example config, and the Windows zip adds `cross-controlw.exe` and the PowerShell module;
+  - each release has `SHA256SUMS` and signed build provenance attestations;
+  - its notes come from this file.
+- **The release workflow checks before publishing**: the tag must match the version in the code, and every archive is smoke-tested by running it, installing it with the install scripts from a local mirror, and loading the bundled module. PRs that touch the release machinery get the same dry run without publishing.
+- **`install.ps1`** installs on Windows (`irm … | iex`) with the PowerShell module.
+- **`install.sh` rewritten**:
+  - it downloads the release archive and verifies it against `SHA256SUMS`;
+  - it installs pre-releases too;
+  - it runs `cross-control doctor`, and leaves the systemd unit to `cross-control service install`;
+  - `CROSS_CONTROL_VERSION`, `CROSS_CONTROL_INSTALL_DIR` and `CROSS_CONTROL_DOWNLOAD_BASE` (an internal mirror) choose what and where.
+- **`scripts/release/release.py`** bumps the version everywhere it appears, checks they agree, extracts release notes and builds archives. See [docs/releasing.md](docs/releasing.md).
+
+### Fixed
+
+- **`install.sh` downloaded a file no release had ever published** (a bare `cross-control-<target>` binary), and the only published binary was Linux x86_64.
+
 ### Added — PowerShell module
 
 - **`CrossControl` module** (`deploy/powershell`): idempotent functions over the CLI's `--json` interface. Each reports `Changed`, and those that make changes support `-WhatIf`.

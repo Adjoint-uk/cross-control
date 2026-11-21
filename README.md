@@ -49,13 +49,31 @@ cross-control takes a different approach:
 
 ### Install script (recommended)
 
+Linux:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.sh | bash
 ```
 
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.ps1 | iex
+```
+
+Both download the newest release and verify its checksum. They install it
+for the current user without needing admin rights, then run
+`cross-control doctor` to show anything left to set up. On Windows, the
+[CrossControl PowerShell module](deploy/powershell/README.md) is installed
+too. Set `CROSS_CONTROL_VERSION` to install a specific version.
+
 ### Prebuilt binaries
 
-Download the latest release from [GitHub Releases](https://github.com/Adjoint-uk/cross-control/releases).
+[GitHub Releases](https://github.com/Adjoint-uk/cross-control/releases) has
+archives for Linux (x86_64, aarch64) and Windows (x86_64), with
+`SHA256SUMS` and signed build provenance; see
+[releasing](docs/releasing.md#what-a-release-contains) for how to verify
+them.
 
 ### Build from source
 

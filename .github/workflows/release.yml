@@ -1,50 +1,215 @@
 name: Release
 
+# A pushed tag vX.Y.Z builds every target, smoke-tests the archives, and
+# publishes a GitHub release with checksums and build provenance. Pull
+# requests that touch the release machinery, and manual runs, do the same
+# as a dry run: everything except publishing.
+
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/release/**"
+      - "install.sh"
+      - "install.ps1"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Check the version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version=$(python3 scripts/release/release.py version --tag "$GITHUB_REF")
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            version=$(python3 scripts/release/release.py version)
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version"
+      - name: Release notes
+        run: |
+          if [[ "${{ steps.version.outputs.publish }}" == true ]]; then
+            python3 scripts/release/release.py notes "${{ steps.version.outputs.version }}" > notes.md
+          else
+            python3 scripts/release/release.py notes "${{ steps.version.outputs.version }}" --allow-unreleased > notes.md
+          fi
+          cat notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes.md
+
   build:
     name: Build (${{ matrix.target }})
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # The oldest supported Ubuntu, for the widest glibc compatibility.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact: cross-control
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target ${{ matrix.target }}
+        with:
+          key: release-${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p cross-control-cli --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          python3 scripts/release/release.py package \
+            --target ${{ matrix.target }} --version "$VERSION" \
+            --bin-dir target/${{ matrix.target }}/release --out dist
+      - name: Smoke-test the archive (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          tar xzf dist/*.tar.gz -C "$work"
+          exe="$work/cross-control-$VERSION-${{ matrix.target }}/cross-control"
+          test "$("$exe" --version)" = "cross-control $VERSION"
+          export CROSS_CONTROL_CONFIG_DIR="$work/config" CROSS_CONTROL_RUNTIME_DIR="$work/run"
+          "$exe" identity --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["fingerprint"].startswith("SHA256:")'
+          "$exe" config check "$work/cross-control-$VERSION-${{ matrix.target }}/config.example.toml" --json
+      - name: Smoke-test the archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'smoke'
+          Expand-Archive (Get-Item dist/*.zip) -DestinationPath $work
+          $pkg = Join-Path $work "cross-control-$env:VERSION-${{ matrix.target }}"
+          $version = & "$pkg/cross-control.exe" --version
+          if ($version -ne "cross-control $env:VERSION") { throw "unexpected version: $version" }
+          if (-not (Test-Path "$pkg/cross-controlw.exe")) { throw 'cross-controlw.exe is missing' }
+          $env:CROSS_CONTROL_CONFIG_DIR = Join-Path $work 'config'
+          $env:CROSS_CONTROL_RUNTIME_DIR = Join-Path $work 'run'
+          # The bundled module installs from the unpacked archive.
+          Import-Module "$pkg/CrossControl"
+          $installed = Install-CrossControl -Path $pkg -Destination (Join-Path $work 'bin')
+          if (-not $installed.Changed) { throw 'install reported no change' }
+          $identity = Get-CrossControlIdentity
+          if ($identity.fingerprint -notlike 'SHA256:*') { throw 'no fingerprint' }
+          & "$pkg/cross-control.exe" config check "$pkg/config.example.toml" --json
+          if ($LASTEXITCODE -ne 0) { throw 'the example config does not validate' }
+      - name: Serve the archive as a release mirror
+        shell: bash
+        run: |
+          mkdir mirror
+          cp dist/*.tar.gz dist/*.zip mirror/ 2>/dev/null || true
+          cat dist/*.sha256 > mirror/SHA256SUMS
+          cd mirror && nohup python3 -m http.server 18765 --bind 127.0.0.1 > ../mirror.log 2>&1 &
+          sleep 2
+      - name: install.sh from the archive
+        if: runner.os == 'Linux'
+        env:
+          CROSS_CONTROL_VERSION: ${{ needs.prepare.outputs.version }}
+          CROSS_CONTROL_DOWNLOAD_BASE: http://127.0.0.1:18765
+          CROSS_CONTROL_INSTALL_DIR: ${{ runner.temp }}/install-sh/bin
+          CROSS_CONTROL_SERVICE: "0"
+        run: |
+          bash install.sh < /dev/null
+          test "$("$CROSS_CONTROL_INSTALL_DIR/cross-control" --version)" = "cross-control $VERSION"
+      - name: install.ps1 from the archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $env:RUNNER_TEMP 'install-ps1'
+          ./install.ps1 -Version $env:VERSION -DownloadBase http://127.0.0.1:18765 -Destination $dest
+          $version = & (Join-Path $dest 'cross-control.exe') --version
+          if ($version -ne "cross-control $env:VERSION") { throw "unexpected version: $version" }
+          if (-not (Test-Path (Join-Path $dest 'cross-controlw.exe'))) { throw 'cross-controlw.exe was not installed' }
+          Import-Module CrossControl -Force
+          if (-not (Get-Command Enable-CrossControlAutostart -ErrorAction SilentlyContinue)) { throw 'the module was not installed' }
       - uses: actions/upload-artifact@v4
         with:
-          name: cross-control-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+          name: dist-${{ matrix.target }}
+          path: dist/*
 
-  release:
-    name: Create Release
-    needs: build
+  installers:
+    name: Install scripts
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: bash -n install.sh
+      - run: shellcheck install.sh
+      - name: install.ps1 parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | Write-Error; exit 1 }
+
+  publish:
+    name: Publish
+    needs: [prepare, build, installers]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
         with:
-          generate_release_notes: true
-          files: |
-            artifacts/cross-control-x86_64-unknown-linux-gnu/cross-control
+          name: release-notes
+      - name: Checksums
+        working-directory: dist
+        run: |
+          cat *.sha256 > SHA256SUMS
+          rm *.sha256
+          sha256sum --check SHA256SUMS
+          cat SHA256SUMS
+      - name: Build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/cross-control-*
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "cross-control $VERSION" \
+            --notes-file notes.md \
+            --verify-tag "${prerelease[@]}"
