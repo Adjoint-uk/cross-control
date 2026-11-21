@@ -20,6 +20,8 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+      - name: Version numbers agree
+        run: python3 scripts/release/release.py version
 
   clippy:
     name: Clippy

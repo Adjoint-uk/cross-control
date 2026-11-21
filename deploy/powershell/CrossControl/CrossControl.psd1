@@ -30,6 +30,7 @@
     AliasesToExport   = @()
     PrivateData       = @{
         PSData = @{
+            Prerelease = 'alpha1'
             Tags       = @('KVM', 'keyboard', 'mouse', 'cross-control', 'Windows', 'Linux')
             ProjectUri = 'https://github.com/Adjoint-uk/cross-control'
         }

@@ -1,179 +1,118 @@
 #!/usr/bin/env bash
+# cross-control installer for Linux.
+#
+#   curl -fsSL https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.sh | bash
+#
+# Downloads a release archive, checks it against the release's SHA256SUMS,
+# installs the binary, and runs `cross-control doctor` to show what (if
+# anything) still needs setting up.
+#
+# Environment:
+#   CROSS_CONTROL_VERSION      version to install, e.g. 0.3.0 (default: latest)
+#   CROSS_CONTROL_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
+#   CROSS_CONTROL_SERVICE      "1" to also install and start the systemd user
+#                              service without asking; "0" to skip it
+#   CROSS_CONTROL_DOWNLOAD_BASE  URL holding the archives and SHA256SUMS, for
+#                              an internal mirror (default: the GitHub release)
 set -euo pipefail
 
-# cross-control installer
-# Downloads the latest release binary and sets up permissions.
-
 REPO="Adjoint-uk/cross-control"
-BIN_NAME="cross-control"
+WORK=""
+trap '[ -n "$WORK" ] && rm -rf "$WORK"' EXIT
 
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*"; }
 warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*"; }
-error() { printf '\033[1;31m[error]\033[0m %s\n' "$*"; exit 1; }
+error() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
-detect_arch() {
-    local arch
-    arch="$(uname -m)"
-    case "$arch" in
-        x86_64|amd64) echo "x86_64-unknown-linux-gnu" ;;
-        aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
-        *) error "Unsupported architecture: $arch. Only x86_64 and aarch64 are supported." ;;
+need() { command -v "$1" >/dev/null 2>&1 || error "$1 is required"; }
+
+detect_target() {
+    case "$(uname -m)" in
+        x86_64 | amd64) echo "x86_64-unknown-linux-gnu" ;;
+        aarch64 | arm64) echo "aarch64-unknown-linux-gnu" ;;
+        *) error "unsupported architecture: $(uname -m) (x86_64 and aarch64 are supported)" ;;
     esac
 }
 
-detect_install_dir() {
-    if [ -d "$HOME/.cargo/bin" ]; then
-        echo "$HOME/.cargo/bin"
-    elif [ -d "$HOME/.local/bin" ]; then
-        echo "$HOME/.local/bin"
+latest_version() {
+    # The newest release, including pre-releases.
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" |
+        sed -n -E 's/.*"tag_name": *"v([^"]+)".*/\1/p' | head -n 1
+}
+
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
     else
-        mkdir -p "$HOME/.local/bin"
-        echo "$HOME/.local/bin"
+        shasum -a 256 "$1" | cut -d' ' -f1
     fi
-}
-
-get_latest_version() {
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-        | grep '"tag_name"' \
-        | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
-}
-
-download_binary() {
-    local version="$1"
-    local target="$2"
-    local install_dir="$3"
-    local url="https://github.com/${REPO}/releases/download/${version}/${BIN_NAME}-${target}"
-
-    info "Downloading cross-control ${version} for ${target}..."
-    curl -fsSL -o "${install_dir}/${BIN_NAME}" "$url"
-    chmod +x "${install_dir}/${BIN_NAME}"
-    info "Installed to ${install_dir}/${BIN_NAME}"
-}
-
-check_permissions() {
-    local issues=0
-
-    # Check input group membership
-    if ! groups | grep -qw input; then
-        warn "Your user is not in the 'input' group."
-        warn "  Fix: sudo usermod -aG input \$USER"
-        warn "  Then log out and back in."
-        issues=$((issues + 1))
-    fi
-
-    # Check /dev/uinput
-    if [ -e /dev/uinput ]; then
-        if ! [ -r /dev/uinput ] || ! [ -w /dev/uinput ]; then
-            warn "/dev/uinput is not readable/writable by your user."
-            warn "  Fix: sudo modprobe uinput"
-            warn "  echo 'KERNEL==\"uinput\", MODE=\"0660\", GROUP=\"input\"' | sudo tee /etc/udev/rules.d/99-uinput.rules"
-            warn "  sudo udevadm control --reload-rules && sudo udevadm trigger"
-            issues=$((issues + 1))
-        fi
-    else
-        warn "/dev/uinput not found."
-        warn "  Fix: sudo modprobe uinput"
-        issues=$((issues + 1))
-    fi
-
-    # Check /dev/input readability
-    if ! ls /dev/input/event* &>/dev/null; then
-        warn "Cannot access /dev/input/event* devices."
-        warn "  This may be a permissions issue (see input group fix above)."
-        issues=$((issues + 1))
-    fi
-
-    if [ "$issues" -eq 0 ]; then
-        info "Permissions look good."
-    else
-        echo ""
-        warn "$issues permission issue(s) found. cross-control may not work correctly until fixed."
-    fi
-}
-
-setup_systemd() {
-    local service_dir="$HOME/.config/systemd/user"
-    local install_dir="$1"
-
-    read -rp "Set up systemd user service? [y/N] " answer
-    if [[ ! "$answer" =~ ^[Yy] ]]; then
-        return
-    fi
-
-    mkdir -p "$service_dir"
-    # Keep this in sync with systemd/cross-control.service. No network-online
-    # ordering — that target isn't available in the user manager and the
-    # daemon reconnects on its own. ExecStart is pinned to the real install
-    # path so it works regardless of the user manager's PATH.
-    cat > "${service_dir}/cross-control.service" <<UNIT
-[Unit]
-Description=cross-control virtual KVM daemon
-Documentation=https://github.com/${REPO}
-
-[Service]
-Type=simple
-ExecStart=${install_dir}/${BIN_NAME} start
-Restart=on-failure
-RestartSec=5
-Environment=RUST_LOG=info
-
-[Install]
-WantedBy=default.target
-UNIT
-
-    systemctl --user daemon-reload
-    info "Systemd service installed at ${service_dir}/cross-control.service"
-    info "  Enable: systemctl --user enable --now cross-control"
-    info "  (Linger to run before login: sudo loginctl enable-linger \$USER)"
 }
 
 main() {
-    info "cross-control installer"
-    echo ""
+    [ "$(uname -s)" = Linux ] || error "this installer is for Linux; on Windows use install.ps1"
+    need curl
+    need tar
 
-    # Check OS
-    if [ "$(uname -s)" != "Linux" ]; then
-        error "cross-control currently only supports Linux."
+    local target version install_dir
+    target="$(detect_target)"
+    version="${CROSS_CONTROL_VERSION:-}"
+    [ -n "$version" ] || version="$(latest_version)"
+    version="${version#v}"
+    [ -n "$version" ] || error "could not find the latest release (set CROSS_CONTROL_VERSION)"
+    install_dir="${CROSS_CONTROL_INSTALL_DIR:-$HOME/.local/bin}"
+
+    local archive="cross-control-${version}-${target}.tar.gz"
+    local base="${CROSS_CONTROL_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download/v${version}}"
+    WORK="$(mktemp -d)"
+    local work="$WORK"
+
+    info "Downloading cross-control ${version} for ${target}"
+    curl -fsSL -o "$work/$archive" "$base/$archive" || error "download failed: $base/$archive"
+    curl -fsSL -o "$work/SHA256SUMS" "$base/SHA256SUMS" || error "download failed: $base/SHA256SUMS"
+
+    local expected actual
+    expected="$(awk -v f="$archive" '$2 == f { print $1 }' "$work/SHA256SUMS")"
+    [ -n "$expected" ] || error "$archive is not listed in SHA256SUMS"
+    actual="$(sha256 "$work/$archive")"
+    [ "$expected" = "$actual" ] || error "checksum mismatch for $archive"
+    info "Checksum verified"
+
+    tar xzf "$work/$archive" -C "$work"
+    mkdir -p "$install_dir"
+    install -m 0755 "$work/cross-control-${version}-${target}/cross-control" "$install_dir/cross-control"
+    local exe="$install_dir/cross-control"
+    info "Installed $("$exe" --version) to $exe"
+
+    local config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/cross-control"
+    if [ ! -e "$config_dir/config.toml" ]; then
+        mkdir -p "$config_dir"
+        install -m 0600 "$work/cross-control-${version}-${target}/config.example.toml" "$config_dir/config.example.toml"
+        info "Example configuration: $config_dir/config.example.toml"
     fi
 
-    local target
-    target="$(detect_arch)"
-    info "Detected target: ${target}"
+    case ":$PATH:" in
+        *":$install_dir:"*) ;;
+        *) warn "$install_dir is not in your PATH; add: export PATH=\"$install_dir:\$PATH\"" ;;
+    esac
 
-    local install_dir
-    install_dir="$(detect_install_dir)"
-    info "Install directory: ${install_dir}"
+    echo
+    info "Checking this machine (cross-control doctor):"
+    "$exe" doctor || true
 
-    local version
-    version="$(get_latest_version)"
-    if [ -z "$version" ]; then
-        error "Could not determine latest release version. Check your internet connection."
+    local service="${CROSS_CONTROL_SERVICE:-}"
+    if [ -z "$service" ] && [ -t 0 ] && command -v systemctl >/dev/null 2>&1; then
+        read -rp "Start cross-control at login (systemd user service)? [y/N] " answer
+        if [[ "$answer" =~ ^[Yy] ]]; then service=1; fi
     fi
-    info "Latest version: ${version}"
-
-    echo ""
-    download_binary "$version" "$target" "$install_dir"
-
-    echo ""
-    check_permissions
-
-    echo ""
-    setup_systemd "$install_dir"
-
-    echo ""
-    info "Installation complete!"
-
-    # Check PATH
-    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$install_dir"; then
-        warn "${install_dir} is not in your PATH."
-        warn "  Add to your shell profile: export PATH=\"${install_dir}:\$PATH\""
+    if [ "$service" = 1 ]; then
+        "$exe" service install --enable
+    else
+        info "To start at login later: cross-control service install --enable"
     fi
 
-    echo ""
-    info "Next steps:"
-    info "  1. cross-control generate-cert --output ~/.config/cross-control/"
-    info "  2. Create ~/.config/cross-control/config.toml"
-    info "  3. cross-control start"
+    echo
+    info "Next: cross-control identity   (this machine's fingerprint, for pairing)"
+    info "      docs: https://github.com/${REPO}/blob/main/docs/setup-guide.md"
 }
 
 main "$@"

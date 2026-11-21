@@ -16,17 +16,23 @@
 curl -fsSL https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.sh | bash
 ```
 
-The script will download the latest binary, check permissions, and optionally set up a systemd service.
+The script downloads the newest release, verifies it against the release's
+`SHA256SUMS`, installs it to `~/.local/bin`, runs `cross-control doctor` and
+offers to set up the systemd user service. On Windows use `install.ps1`
+instead (see [Windows](windows.md#setup)).
 
 ### Prebuilt binaries
 
-Download from [GitHub Releases](https://github.com/Adjoint-uk/cross-control/releases):
+Download the archive for your platform and `SHA256SUMS` from
+[GitHub Releases](https://github.com/Adjoint-uk/cross-control/releases):
 
 ```bash
-# Download (replace with your architecture)
-curl -fsSL -o cross-control https://github.com/Adjoint-uk/cross-control/releases/latest/download/cross-control-x86_64-unknown-linux-gnu
-chmod +x cross-control
-mv cross-control ~/.local/bin/
+v=0.3.0; t=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
+curl -fsSLO https://github.com/Adjoint-uk/cross-control/releases/download/v$v/cross-control-$v-$t.tar.gz
+curl -fsSLO https://github.com/Adjoint-uk/cross-control/releases/download/v$v/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+tar xzf cross-control-$v-$t.tar.gz
+install -m 0755 cross-control-$v-$t/cross-control ~/.local/bin/
 ```
 
 ### Build from source
