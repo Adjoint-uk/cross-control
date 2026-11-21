@@ -1,6 +1,6 @@
 @{
     RootModule        = 'CrossControl.psm1'
-    ModuleVersion     = '0.1.0'
+    ModuleVersion     = '0.2.0'
     GUID              = '6f0b8a43-2f4e-4f39-9b8f-6d0a3c1e7c55'
     Author            = 'cross-control contributors'
     Copyright         = '(c) cross-control contributors. MIT or Apache-2.0.'
@@ -30,7 +30,7 @@
     AliasesToExport   = @()
     PrivateData       = @{
         PSData = @{
-            Prerelease = 'alpha1'
+            Prerelease = ''
             Tags       = @('KVM', 'keyboard', 'mouse', 'cross-control', 'Windows', 'Linux')
             ProjectUri = 'https://github.com/Adjoint-uk/cross-control'
         }
