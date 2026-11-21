@@ -6,6 +6,12 @@
     release.py notes VERSION            print that version's CHANGELOG section
     release.py package --target T --version V --bin-dir DIR --out DIR
                                         build the release archive for target T
+    release.py linux-packages --target T --version V --bin-dir DIR --out DIR
+                [--nfpm PATH]           build the .deb and .rpm for target T
+    release.py homebrew --version V --sums FILE [--base-url URL]
+                                        print the Homebrew formula
+    release.py scoop --version V --sums FILE [--base-url URL]
+                                        print the Scoop manifest
     release.py bump NEW_VERSION         set a new version everywhere, and open
                                         its CHANGELOG section from [Unreleased]
 
@@ -16,9 +22,12 @@ dependency versions), Cargo.lock, and the PowerShell module manifest.
 import argparse
 import datetime
 import hashlib
+import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import tarfile
 import zipfile
 from pathlib import Path
@@ -28,6 +37,10 @@ CARGO_TOML = ROOT / "Cargo.toml"
 CARGO_LOCK = ROOT / "Cargo.lock"
 CHANGELOG = ROOT / "CHANGELOG.md"
 PSD1 = ROOT / "deploy/powershell/CrossControl/CrossControl.psd1"
+
+REPO = "Adjoint-uk/cross-control"
+DESCRIPTION = "Share one keyboard and mouse across Linux, Windows and macOS machines"
+HOMEPAGE = "https://cross-control.adjoint.uk"
 
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
 
@@ -179,9 +192,199 @@ def cmd_package(args):
                 with open(source, "rb") as fh:
                     tf.addfile(info, fh)
 
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    (out / f"{archive.name}.sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    write_sha256(archive)
     print(archive)
+
+
+def write_sha256(path):
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    (path.parent / f"{path.name}.sha256").write_text(f"{digest}  {path.name}\n", encoding="utf-8")
+
+
+# --- Linux packages (.deb, .rpm) ---------------------------------------------
+
+LINUX_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}  # nfpm's (Go's) names
+
+
+def nfpm_config(version, arch, bin_dir):
+    """nfpm's configuration, as JSON (which is valid YAML)."""
+    linux = ROOT / "packaging/linux"
+    doc = "/usr/share/doc/cross-control"
+    contents = [
+        {"src": str(Path(bin_dir) / "cross-control"), "dst": "/usr/bin/cross-control",
+         "file_info": {"mode": 0o755}},
+        {"src": str(linux / "70-cross-control.rules"), "dst": "/usr/lib/udev/rules.d/70-cross-control.rules"},
+        {"src": str(linux / "cross-control.conf"), "dst": "/usr/lib/modules-load.d/cross-control.conf"},
+        {"src": str(ROOT / "examples/config.toml"), "dst": f"{doc}/config.example.toml"},
+    ]
+    for name in COMMON_FILES:
+        contents.append({"src": str(ROOT / name), "dst": f"{doc}/{name}"})
+    return {
+        "name": "cross-control",
+        "arch": arch,
+        "platform": "linux",
+        "version": version,
+        "version_schema": "semver",
+        "maintainer": "Adjoint Ltd <hello@adjoint.uk>",
+        "description": DESCRIPTION + ", over an encrypted QUIC connection.",
+        "vendor": "Adjoint Ltd",
+        "homepage": HOMEPAGE,
+        "license": "MIT OR Apache-2.0",
+        "section": "utils",
+        "priority": "optional",
+        "contents": contents,
+        "scripts": {"postinstall": str(linux / "postinstall.sh")},
+    }
+
+
+def cmd_linux_packages(args):
+    machine = args.target.split("-")[0]
+    if "linux" not in args.target or machine not in LINUX_ARCH:
+        die(f"no Linux packages for target {args.target}")
+    if not (Path(args.bin_dir) / "cross-control").is_file():
+        die(f"{args.bin_dir}/cross-control not found")
+    out = Path(args.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    config = nfpm_config(args.version, LINUX_ARCH[machine], Path(args.bin_dir).resolve())
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = Path(tmp) / "nfpm.yaml"
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        for packager in ("deb", "rpm"):
+            before = set(out.iterdir())
+            subprocess.run(
+                [args.nfpm, "package", "--config", str(config_path), "--packager", packager, "--target", str(out)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            for path in sorted(set(out.iterdir()) - before):
+                write_sha256(path)
+                print(path)
+
+
+# --- Homebrew and Scoop ------------------------------------------------------
+
+
+def read_sums(path):
+    """{file name: sha256} from a SHA256SUMS file."""
+    sums = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            sums[parts[1].lstrip("*")] = parts[0]
+    return sums
+
+
+def release_base(version, base_url):
+    return (base_url or f"https://github.com/{REPO}/releases/download/v{version}").rstrip("/")
+
+
+def archive_name(version, target):
+    ext = "zip" if "windows" in target else "tar.gz"
+    return f"cross-control-{version}-{target}.{ext}"
+
+
+HOMEBREW_TARGETS = [
+    ("on_macos", "on_arm", "aarch64-apple-darwin"),
+    ("on_macos", "on_intel", "x86_64-apple-darwin"),
+    ("on_linux", "on_arm", "aarch64-unknown-linux-gnu"),
+    ("on_linux", "on_intel", "x86_64-unknown-linux-gnu"),
+]
+
+
+def homebrew_formula(version, sums, base_url=None, partial=False):
+    base = release_base(version, base_url)
+    blocks = {}
+    for system, cpu, target in HOMEBREW_TARGETS:
+        name = archive_name(version, target)
+        if name not in sums:
+            if partial:
+                continue
+            die(f"{name} is not in the checksums")
+        blocks.setdefault(system, []).append(
+            f"    {cpu} do\n"
+            f'      url "{base}/{name}"\n'
+            f'      sha256 "{sums[name]}"\n'
+            f"    end\n"
+        )
+    if not blocks:
+        die("no Homebrew targets in the checksums")
+    platforms = "".join(f"  {system} do\n{''.join(cpus)}  end\n\n" for system, cpus in blocks.items())
+    return f'''# Generated by scripts/release/release.py for each release; edit the generator.
+class CrossControl < Formula
+  desc "{DESCRIPTION}"
+  homepage "{HOMEPAGE}"
+  version "{version}"
+  license any_of: ["MIT", "Apache-2.0"]
+
+{platforms}  def install
+    bin.install "cross-control"
+    pkgshare.install "config.example.toml"
+  end
+
+  def caveats
+    <<~EOS
+      Example configuration: #{{opt_pkgshare}}/config.example.toml
+      Start at login: cross-control service install --enable
+
+      On macOS, grant #{{opt_bin}}/cross-control both Input Monitoring and
+      Accessibility in System Settings > Privacy & Security, then run
+      `cross-control doctor`. macOS may ask again after an upgrade.
+
+      On Linux, your user must be in the input group and /dev/uinput writable;
+      `cross-control doctor` shows how.
+    EOS
+  end
+
+  test do
+    assert_match "cross-control #{{version}}", shell_output("#{{bin}}/cross-control --version")
+    ENV["CROSS_CONTROL_CONFIG_DIR"] = (testpath/"config").to_s
+    ENV["CROSS_CONTROL_RUNTIME_DIR"] = (testpath/"run").to_s
+    assert_match "SHA256:", shell_output("#{{bin}}/cross-control identity --json")
+  end
+end
+'''
+
+
+def scoop_manifest(version, sums, base_url=None):
+    target = "x86_64-pc-windows-msvc"
+    name = archive_name(version, target)
+    if name not in sums:
+        die(f"{name} is not in the checksums")
+    base = release_base(version, base_url)
+    manifest = {
+        "##": "Generated by scripts/release/release.py for each release; edit the generator.",
+        "version": version,
+        "description": DESCRIPTION + ".",
+        "homepage": HOMEPAGE,
+        "license": "MIT|Apache-2.0",
+        "notes": [
+            "Start at login: cross-control service install --enable",
+            "Check this machine: cross-control doctor",
+        ],
+        "architecture": {"64bit": {"url": f"{base}/{name}", "hash": sums[name]}},
+        "extract_dir": f"cross-control-{version}-{target}",
+        "bin": ["cross-control.exe", "cross-controlw.exe"],
+        "checkver": {"github": f"https://github.com/{REPO}"},
+        "autoupdate": {
+            "architecture": {
+                "64bit": {
+                    "url": f"https://github.com/{REPO}/releases/download/v$version/"
+                    f"cross-control-$version-{target}.zip"
+                }
+            },
+            "hash": {"url": "$baseurl/SHA256SUMS"},
+            "extract_dir": f"cross-control-$version-{target}",
+        },
+    }
+    return json.dumps(manifest, indent=4) + "\n"
+
+
+def cmd_homebrew(args):
+    sys.stdout.write(homebrew_formula(args.version, read_sums(args.sums), args.base_url, args.partial))
+
+
+def cmd_scoop(args):
+    sys.stdout.write(scoop_manifest(args.version, read_sums(args.sums), args.base_url))
 
 
 # --- Bump -------------------------------------------------------------------
@@ -262,6 +465,23 @@ def main():
     p.add_argument("--bin-dir", required=True)
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_package)
+
+    p = sub.add_parser("linux-packages")
+    p.add_argument("--target", required=True)
+    p.add_argument("--version", required=True)
+    p.add_argument("--bin-dir", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--nfpm", default="nfpm", help="the nfpm executable")
+    p.set_defaults(func=cmd_linux_packages)
+
+    for name, func in (("homebrew", cmd_homebrew), ("scoop", cmd_scoop)):
+        p = sub.add_parser(name)
+        p.add_argument("--version", required=True)
+        p.add_argument("--sums", required=True, help="the release's SHA256SUMS file")
+        p.add_argument("--base-url", help="where the archives are (default: the GitHub release)")
+        if name == "homebrew":
+            p.add_argument("--partial", action="store_true", help="leave out targets missing from the checksums")
+        p.set_defaults(func=func)
 
     p = sub.add_parser("bump")
     p.add_argument("version")

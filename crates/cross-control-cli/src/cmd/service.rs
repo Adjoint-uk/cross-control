@@ -25,7 +25,7 @@ const TASK_NAME: &str = "cross-control";
 const AGENT_LABEL: &str = "uk.adjoint.cross-control";
 
 pub async fn run(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<u8> {
-    let exe = std::env::current_exe()?;
+    let exe = stable_exe(&std::env::current_exe()?);
     // Absolute, so the unit works whatever directory systemd starts it in.
     let config = ctx
         .config_path
@@ -59,6 +59,39 @@ pub async fn run(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<u8> {
         ServiceAction::Install { enable } => install(ctx, &unit, enable),
         ServiceAction::Uninstall => uninstall(ctx),
     }
+}
+
+/// The path a service should run, for a binary a package manager installed.
+///
+/// Homebrew keeps each version in its own directory
+/// (`<prefix>/Cellar/<name>/<version>/bin/…`) and Scoop does the same
+/// (`…/scoop/apps/<name>/<version>/…`). Both keep a stable link to the
+/// current version (`<prefix>/opt/<name>/…`, `…/apps/<name>/current/…`).
+/// A service that names the versioned path would break at the next upgrade,
+/// so use the stable one when it exists.
+pub fn stable_exe(exe: &Path) -> PathBuf {
+    use std::path::Component;
+    let parts: Vec<Component<'_>> = exe.components().collect();
+    for (i, part) in parts.iter().enumerate() {
+        // Need <marker>/<name>/<version>/<rest…>.
+        if i + 3 >= parts.len() {
+            break;
+        }
+        let name = parts[i + 1].as_os_str();
+        let rest = || parts[i + 3..].iter().collect::<PathBuf>();
+        let head = || parts[..i].iter().collect::<PathBuf>();
+        let candidate = match part.as_os_str().to_str() {
+            Some("Cellar") => head().join("opt").join(name).join(rest()),
+            Some("apps") if parts[i + 2].as_os_str() != "current" => {
+                head().join("apps").join(name).join("current").join(rest())
+            }
+            _ => continue,
+        };
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    exe.to_path_buf()
 }
 
 /// Where systemd looks for this user's units.
@@ -623,6 +656,33 @@ mod tests {
         assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(xml.contains("<UserId>PC\\alice</UserId>"));
         assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+    }
+
+    #[test]
+    fn package_manager_installs_use_the_stable_path() {
+        let root = std::env::temp_dir().join(format!("cc-stable-exe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let touch = |rel: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"").unwrap();
+            path
+        };
+        // Homebrew: Cellar/<name>/<version>/bin → opt/<name>/bin.
+        let cellar = touch("brew/Cellar/cross-control/0.3.0/bin/cross-control");
+        let opt = touch("brew/opt/cross-control/bin/cross-control");
+        assert_eq!(stable_exe(&cellar), opt);
+        // Scoop: apps/<name>/<version> → apps/<name>/current.
+        let versioned = touch("scoop/apps/cross-control/0.3.0/cross-control.exe");
+        let current = touch("scoop/apps/cross-control/current/cross-control.exe");
+        assert_eq!(stable_exe(&versioned), current);
+        assert_eq!(stable_exe(&current), current);
+        // No stable link: keep the path as it is.
+        let lone = touch("other/Cellar/x/1.0/bin/cross-control");
+        assert_eq!(stable_exe(&lone), lone);
+        let plain = touch("usr/bin/cross-control");
+        assert_eq!(stable_exe(&plain), plain);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

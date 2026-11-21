@@ -1,0 +1,4 @@
+# Installed by the cross-control package.
+# Let members of the input group create virtual input devices (/dev/uinput),
+# which cross-control needs to inject input when this machine is controlled.
+KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"

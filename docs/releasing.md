@@ -10,7 +10,10 @@ Releases are cut from `main` by pushing a tag. The
 | `cross-control-VERSION-x86_64-unknown-linux-gnu.tar.gz` | `cross-control`, README, CHANGELOG, licences, `config.example.toml` |
 | `cross-control-VERSION-aarch64-unknown-linux-gnu.tar.gz` | the same, for 64-bit ARM (Raspberry Pi 4/5 with a 64-bit OS, ARM servers) |
 | `cross-control-VERSION-x86_64-pc-windows-msvc.zip` | `cross-control.exe`, `cross-controlw.exe`, the `CrossControl` PowerShell module, and the same documents |
-| `SHA256SUMS` | SHA-256 of every archive |
+| `cross-control-VERSION-aarch64-apple-darwin.tar.gz`, `…-x86_64-apple-darwin.tar.gz` | `cross-control` for Apple silicon and Intel Macs, and the same documents |
+| `cross-control_VERSION_amd64.deb`, `…_arm64.deb` | Debian / Ubuntu packages: `/usr/bin/cross-control`, a udev rule giving the `input` group `/dev/uinput`, and `uinput` loaded at boot |
+| `cross-control-VERSION-1.x86_64.rpm`, `…aarch64.rpm` | the same, for Fedora / RHEL / openSUSE |
+| `SHA256SUMS` | SHA-256 of every file above |
 
 Linux binaries are built on Ubuntu 22.04, so they run on any distribution
 with glibc 2.35 or newer.
@@ -59,7 +62,23 @@ refuses to release if it does not. It also checks that the CHANGELOG has a
 section for it, which becomes the release notes. It builds and smoke-tests
 every archive: it runs the binary, installs it with `install.sh` /
 `install.ps1` from a local mirror, and loads the bundled module. Finally it
-attests the archives and publishes the release. Versions with a pre-release
+attests the archives and publishes the release.
+
+It also builds the `.deb` and `.rpm` packages (with
+[nfpm](https://nfpm.goreleaser.com)) and installs and removes each on Ubuntu
+and in a Fedora container. Before publishing, it installs the Homebrew formula
+and the Scoop manifest from the local mirror. After publishing, it opens a
+pull request pointing `Formula/cross-control.rb` (the Homebrew tap) and
+`bucket/cross-control.json` (the Scoop bucket) at the new release. **Merge
+that pull request:** Homebrew and Scoop users get the new version from it. If
+the repository does not allow Actions to open pull requests, the step says so
+and you can generate both files yourself:
+
+```bash
+curl -fsSLO https://github.com/Adjoint-uk/cross-control/releases/download/v0.3.0/SHA256SUMS
+scripts/release/release.py homebrew --version 0.3.0 --sums SHA256SUMS > Formula/cross-control.rb
+scripts/release/release.py scoop --version 0.3.0 --sums SHA256SUMS > bucket/cross-control.json
+``` Versions with a pre-release
 suffix (`0.3.0-alpha.1`) are marked as pre-releases.
 
 `scripts/release/release.py version` (run in CI) fails if the version

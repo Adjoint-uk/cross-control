@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Package managers.** The tap and bucket live in this repository, so updating them is a reviewed pull request like any other change.
+  - **Homebrew** (macOS and Linux): `brew tap Adjoint-uk/cross-control https://github.com/Adjoint-uk/cross-control`, then `brew install cross-control`.
+  - **Scoop** (Windows): `scoop bucket add cross-control https://github.com/Adjoint-uk/cross-control`, then `scoop install cross-control`.
+  - **`.deb` and `.rpm` packages** for x86_64 and ARM64 on every release. They install the binary, a udev rule giving the `input` group `/dev/uinput`, and boot-time loading of `uinput`, so only joining the `input` group is left to do by hand.
+  - The release workflow builds the packages and installs and removes each one (Ubuntu, and Fedora in a container). Before publishing, it installs from the Homebrew formula and the Scoop manifest. After publishing, it opens a pull request that points them at the new release.
+- **`service install` survives package upgrades.** Installed by Homebrew or Scoop, the service now runs the package manager's stable path to the current version, not the versioned one an upgrade removes.
+
 ## [0.3.0] - 2026-11-21
 
 Adds macOS (preview), with downloads for Apple silicon and Intel, and start at login through launchd. All three desktop platforms now have downloads, an installer and an end-to-end test on CI.
