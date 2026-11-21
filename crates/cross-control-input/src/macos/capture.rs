@@ -208,6 +208,19 @@ fn events_of_interest() -> Vec<CGEventType> {
     ]
 }
 
+/// Where to put the tap, in order of preference. A HID-level tap sees input
+/// before any application; a session tap is the fallback where the HID
+/// level is not allowed. Test builds tap at the session level, which also
+/// sees events posted at the HID level, as the end-to-end tests' synthetic
+/// "hardware" input is.
+fn tap_locations() -> [CGEventTapLocation; 2] {
+    if cfg!(feature = "test-support") {
+        [CGEventTapLocation::Session, CGEventTapLocation::HID]
+    } else {
+        [CGEventTapLocation::HID, CGEventTapLocation::Session]
+    }
+}
+
 /// Create the tap, report readiness, and run the run loop until stopped.
 fn tap_thread(
     shared: Arc<Shared>,
@@ -224,20 +237,16 @@ fn tap_thread(
         });
     });
 
-    // A HID-level tap sees input before any application; a session tap is
-    // the fallback where the HID level is not allowed.
-    let tap = [CGEventTapLocation::HID, CGEventTapLocation::Session]
-        .into_iter()
-        .find_map(|location| {
-            CGEventTap::new(
-                location,
-                CGEventTapPlacement::HeadInsertEventTap,
-                CGEventTapOptions::Default,
-                events_of_interest(),
-                callback,
-            )
-            .ok()
-        });
+    let tap = tap_locations().into_iter().find_map(|location| {
+        CGEventTap::new(
+            location,
+            CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::Default,
+            events_of_interest(),
+            callback,
+        )
+        .ok()
+    });
     let Some(tap) = tap else {
         let have = super::request_permissions();
         let _ = ready.send(Err(format!(

@@ -94,6 +94,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+          # Apple silicon runners; the Intel build is cross-compiled there
+          # (Rust ad-hoc signs both, as macOS requires to run them).
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
@@ -112,11 +118,18 @@ jobs:
           python3 scripts/release/release.py package \
             --target ${{ matrix.target }} --version "$VERSION" \
             --bin-dir target/${{ matrix.target }}/release --out dist
-      - name: Smoke-test the archive (Linux)
-        if: runner.os == 'Linux'
+      - name: Check the binary's architecture (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          arch=${{ matrix.target }}; arch=${arch%%-*}; [ "$arch" = aarch64 ] && arch=arm64
+          lipo -archs target/${{ matrix.target }}/release/cross-control | tee /dev/stderr | grep -qx "$arch"
+          codesign --verify target/${{ matrix.target }}/release/cross-control
+      - name: Smoke-test the archive (Linux, macOS)
+        # Only where the binary runs natively (not the Intel macOS build).
+        if: runner.os != 'Windows' && matrix.target != 'x86_64-apple-darwin'
         run: |
           set -euo pipefail
-          work=$(mktemp -d)
+          work=$(mktemp -d /tmp/smoke.XXXX)
           tar xzf dist/*.tar.gz -C "$work"
           exe="$work/cross-control-$VERSION-${{ matrix.target }}/cross-control"
           test "$("$exe" --version)" = "cross-control $VERSION"
@@ -153,7 +166,7 @@ jobs:
           cd mirror && nohup python3 -m http.server 18765 --bind 127.0.0.1 > ../mirror.log 2>&1 &
           sleep 2
       - name: install.sh from the archive
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows' && matrix.target != 'x86_64-apple-darwin'
         env:
           CROSS_CONTROL_VERSION: ${{ needs.prepare.outputs.version }}
           CROSS_CONTROL_DOWNLOAD_BASE: http://127.0.0.1:18765

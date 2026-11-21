@@ -1,6 +1,6 @@
 # cross-control
 
-> **Status: `0.2.0`.** The core KVM works end to end on Linux, with Windows and macOS as previews. Downloads for Linux and Windows are on the [releases page](https://github.com/Adjoint-uk/cross-control/releases). It is pre-1.0, so the wire protocol can still change between minor versions: upgrade every machine together.
+> **Status: `0.2.0`.** The core KVM works end to end on Linux, with Windows and macOS as previews. Downloads for Linux and Windows (and macOS from the next release) are on the [releases page](https://github.com/Adjoint-uk/cross-control/releases). It is pre-1.0, so the wire protocol can still change between minor versions: upgrade every machine together.
 
 **Share your keyboard and mouse across machines.** A modern, Rust-based virtual KVM that lets you seamlessly move your cursor between computers on the same network.
 
@@ -42,7 +42,7 @@ cross-control takes a different approach:
 
 - **Linux** (x86_64 or aarch64)
 - **Windows** 10/11 — preview: tested end to end on CI's Windows desktop, not yet validated on physical machines (see [docs/windows.md](docs/windows.md))
-- **macOS** 11+ — preview: native backend built and tested on CI's macOS runners; needs the Input Monitoring and Accessibility permissions; build from source for now (see [docs/macos.md](docs/macos.md))
+- **macOS** 11+ — preview: native backend built and tested on CI's macOS runners; needs the Input Monitoring and Accessibility permissions; downloads from the release after 0.2.0, or build from source (see [docs/macos.md](docs/macos.md))
 - **Rust 1.89+** (if building from source)
 - Linux: user in the `input` group to access keyboard/mouse devices
 - Linux: `/dev/uinput` accessible for virtual device emulation
@@ -51,7 +51,7 @@ cross-control takes a different approach:
 
 ### Install script (recommended)
 
-Linux:
+Linux and macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.sh | bash

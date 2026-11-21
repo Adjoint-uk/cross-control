@@ -3,6 +3,8 @@
 //! it was installed.
 //!
 //! - Linux: a systemd *user* service.
+//! - macOS: a launchd agent in `~/Library/LaunchAgents`, run in the user's
+//!   GUI session (where the event tap and event posting work).
 //! - Windows: a Task Scheduler task that runs at logon, as the user, in
 //!   their desktop session. (A Windows *service* runs in session 0, away
 //!   from the desktop, where it could neither capture nor inject input.)
@@ -20,6 +22,7 @@ use crate::{Ctx, ServiceAction};
 
 const UNIT_NAME: &str = "cross-control.service";
 const TASK_NAME: &str = "cross-control";
+const AGENT_LABEL: &str = "uk.adjoint.cross-control";
 
 pub async fn run(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<u8> {
     let exe = std::env::current_exe()?;
@@ -39,6 +42,9 @@ pub async fn run(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<u8> {
         .collect();
     if cfg!(windows) {
         return windows_task(ctx, action, &exe, config.as_deref(), &env).await;
+    }
+    if cfg!(target_os = "macos") {
+        return launch_agent(ctx, action, &exe, config.as_deref(), &env).await;
     }
     let unit = unit_text(&exe, config.as_deref(), &env);
     match action {
@@ -176,8 +182,183 @@ fn ensure_linux() -> anyhow::Result<()> {
     if cfg!(target_os = "linux") {
         Ok(())
     } else {
-        anyhow::bail!("service management is implemented for Linux (systemd) and Windows only")
+        anyhow::bail!("service management is implemented for Linux, macOS and Windows only")
     }
+}
+
+/// `service` on macOS: the launchd agent.
+async fn launch_agent(
+    ctx: &Ctx,
+    action: ServiceAction,
+    exe: &Path,
+    config: Option<&Path>,
+    env: &[(&str, String)],
+) -> anyhow::Result<u8> {
+    let log = setup::runtime_dir().join("cross-control.log");
+    let plist = launch_agent_plist(exe, config, env, &log);
+    let path = dirs_home()?
+        .join("Library/LaunchAgents")
+        .join(format!("{AGENT_LABEL}.plist"));
+    let domain = format!("gui/{}", current_uid()?);
+    let service = format!("{domain}/{AGENT_LABEL}");
+
+    match action {
+        ServiceAction::Unit => {
+            if ctx.json {
+                Ctx::print_json(&json!({ "name": AGENT_LABEL, "plist": plist }));
+            } else {
+                print!("{plist}");
+            }
+            Ok(exit::OK)
+        }
+        ServiceAction::Install { enable } => {
+            let changed = std::fs::read_to_string(&path).ok().as_deref() != Some(plist.as_str());
+            let loaded = launchctl(&["print", &service]).is_ok();
+            // launchd opens the log before starting the daemon.
+            if let Some(dir) = log.parent() {
+                setup::create_private_dir(dir)?;
+            }
+            if changed {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(&path, &plist)?;
+                if loaded {
+                    // Reload the new definition.
+                    let _ = launchctl(&["bootout", &service]);
+                }
+            }
+            if enable && (changed || !loaded) {
+                launchctl(&["bootstrap", &domain, &path.to_string_lossy()])?;
+            }
+            if ctx.json {
+                Ctx::print_json(&json!({
+                    "changed": changed, "agent": AGENT_LABEL, "path": path, "enabled": enable
+                }));
+            } else if changed {
+                println!("Installed {}.", path.display());
+                if !enable {
+                    println!("It starts at your next login; to start it now: launchctl bootstrap {domain} {}", path.display());
+                }
+            } else {
+                println!("{} is up to date.", path.display());
+            }
+            Ok(exit::OK)
+        }
+        ServiceAction::Uninstall => {
+            let changed = path.exists();
+            // Stop the daemon cleanly first; launchd then leaves it stopped.
+            let endpoint = cross_control_daemon::control::Endpoint::current();
+            let request = cross_control_daemon::control::Request::Stop;
+            let _ = cross_control_daemon::control::request(&endpoint, request).await;
+            let _ = launchctl(&["bootout", &service]);
+            if changed {
+                std::fs::remove_file(&path)?;
+            }
+            if ctx.json {
+                Ctx::print_json(&json!({ "changed": changed, "agent": AGENT_LABEL, "path": path }));
+            } else if changed {
+                println!("Removed {}.", path.display());
+            } else {
+                println!("{} is not installed.", path.display());
+            }
+            Ok(exit::OK)
+        }
+    }
+}
+
+fn dirs_home() -> anyhow::Result<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))
+}
+
+fn current_uid() -> anyhow::Result<String> {
+    let out = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .map_err(|e| anyhow::anyhow!("cannot run id: {e}"))?;
+    let uid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    anyhow::ensure!(
+        out.status.success() && !uid.is_empty(),
+        "cannot tell the current user id"
+    );
+    Ok(uid)
+}
+
+fn launchctl(args: &[&str]) -> anyhow::Result<()> {
+    let output = std::process::Command::new("launchctl")
+        .args(args)
+        .output()
+        .map_err(|e| anyhow::anyhow!("cannot run launchctl: {e}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "`launchctl {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// The launchd agent: run `exe start` in the user's GUI session at login,
+/// restart it if it exits with an error (not after a clean `stop`), and
+/// append its output to `log`.
+pub fn launch_agent_plist(
+    exe: &Path,
+    config: Option<&Path>,
+    env: &[(&str, String)],
+    log: &Path,
+) -> String {
+    let string = |s: &str| format!("<string>{}</string>", xml_escape(s));
+    let mut args = vec![string(&exe.to_string_lossy()), string("start")];
+    if let Some(config) = config {
+        args.push(string("--config"));
+        args.push(string(&config.to_string_lossy()));
+    }
+    let args = args.iter().fold(String::new(), |mut out, a| {
+        let _ = write!(out, "\n    {a}");
+        out
+    });
+    let mut environment = String::new();
+    for (var, value) in env {
+        let _ = write!(
+            environment,
+            "\n    <key>{}</key>{}",
+            xml_escape(var),
+            string(value)
+        );
+    }
+    let log = string(&log.to_string_lossy());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated by `cross-control service install`; regenerate rather than edit. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>{args}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RUST_LOG</key><string>info</string>{environment}
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>StandardOutPath</key>{log}
+  <key>StandardErrorPath</key>{log}
+</dict>
+</plist>
+"#
+    )
 }
 
 /// `service` on Windows: the logon task.
@@ -442,6 +623,24 @@ mod tests {
         assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(xml.contains("<UserId>PC\\alice</UserId>"));
         assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+    }
+
+    #[test]
+    fn launch_agent_runs_this_binary_in_the_gui_session() {
+        let plist = launch_agent_plist(
+            Path::new("/opt/cross control/cross-control"),
+            Some(Path::new("/Users/a&b/config.toml")),
+            &[("CROSS_CONTROL_CONFIG_DIR", "/srv/cc".to_string())],
+            Path::new("/Users/a/Library/Application Support/cross-control/cross-control.log"),
+        );
+        assert!(plist.contains("<key>Label</key><string>uk.adjoint.cross-control</string>"));
+        assert!(plist.contains(
+            "<string>/opt/cross control/cross-control</string>\n    <string>start</string>\n    \
+             <string>--config</string>\n    <string>/Users/a&amp;b/config.toml</string>"
+        ));
+        assert!(plist.contains("<key>CROSS_CONTROL_CONFIG_DIR</key><string>/srv/cc</string>"));
+        assert!(plist.contains("<key>LimitLoadToSessionType</key><string>Aqua</string>"));
+        assert!(plist.contains("<key>SuccessfulExit</key><false/>"));
     }
 
     #[test]

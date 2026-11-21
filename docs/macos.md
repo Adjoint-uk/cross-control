@@ -51,17 +51,38 @@ upgrade, can require granting the permission again.
 
 ## Setup
 
-Build from source for now:
+Releases after 0.2.0 include macOS downloads for Apple silicon and Intel.
+The install script picks the right one, checks it against the release's
+checksums, and installs it to `~/.local/bin`:
 
 ```bash
-cargo install --path crates/cross-control-cli
-cross-control doctor
+curl -fsSL https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.sh | bash
 cross-control identity
 ```
+
+Or build from source with `cargo install --path crates/cross-control-cli`.
 
 Configuration lives in `~/Library/Application Support/cross-control/`, or
 wherever `CROSS_CONTROL_CONFIG_DIR` points. Pairing, trust and layout work as
 on the other platforms; see the [setup guide](setup-guide.md).
+
+## Start at login
+
+```bash
+cross-control service install --enable   # write the agent and start it now
+cross-control service unit               # print the agent without installing
+cross-control service uninstall          # stop it and remove the agent
+```
+
+This writes a launchd agent to
+`~/Library/LaunchAgents/uk.adjoint.cross-control.plist`. It runs in your
+login session, where the event tap and event posting work. launchd restarts
+the daemon if it fails, but not after `cross-control stop`. Its output goes to
+`cross-control.log` in the configuration directory. Installing is idempotent:
+an unchanged agent is left alone, and a changed one is reloaded.
+
+Grant the two permissions to the same binary the agent runs (the path
+`service unit` shows).
 
 ## Limits
 
@@ -70,5 +91,7 @@ on the other platforms; see the [setup guide](setup-guide.md).
   This macOS protection applies to every program.
 - **Caps Lock** is captured as it toggles. Toggling it remotely by posted
   events is unreliable on macOS.
-- **Not yet:** start at login (a launchd agent), release downloads and an
-  installer for macOS. Until then, start it from a terminal.
+- **Unsigned binaries:** release binaries are ad-hoc signed, not notarised.
+  The install script downloads with `curl`, which Gatekeeper does not
+  quarantine. A binary downloaded in a browser needs
+  `xattr -d com.apple.quarantine cross-control` before it runs.

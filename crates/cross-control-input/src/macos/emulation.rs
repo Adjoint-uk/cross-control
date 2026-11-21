@@ -39,6 +39,8 @@ pub struct MacEmulation {
     held_buttons: HashSet<MouseButton>,
     /// Last button press, for click counting: (button, when, where, count).
     last_click: Option<(MouseButton, Instant, (f64, f64), i64)>,
+    /// Stamped into `kCGEventSourceUserData` on every posted event.
+    marker: i64,
 }
 
 impl Default for MacEmulation {
@@ -55,6 +57,18 @@ impl MacEmulation {
             held_keys: HashSet::new(),
             held_buttons: HashSet::new(),
             last_click: None,
+            marker: INJECTED_MARKER,
+        }
+    }
+
+    /// Tests only: an emulator whose events carry no marker, so this
+    /// process's own tap captures them as if they came from hardware.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn as_hardware() -> Self {
+        Self {
+            marker: 0,
+            ..Self::new()
         }
     }
 
@@ -64,7 +78,7 @@ impl MacEmulation {
 
     fn post(&self, event: &CGEvent) {
         // Mark it as ours, so this process's own tap ignores it.
-        event.set_integer_value_field(FIELD_SOURCE_USER_DATA, INJECTED_MARKER);
+        event.set_integer_value_field(FIELD_SOURCE_USER_DATA, self.marker);
         event.set_flags(self.flags());
         event.post(CGEventTapLocation::HID);
     }
