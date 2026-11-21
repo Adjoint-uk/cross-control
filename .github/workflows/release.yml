@@ -112,6 +112,12 @@ jobs:
           key: release-${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked -p cross-control-cli --target ${{ matrix.target }}
+      - name: Ad-hoc sign (macOS)
+        # macOS only runs signed code on Apple silicon, Intel builds under
+        # Rosetta included; the linker signs native arm64 builds but not
+        # cross-compiled x86_64 ones.
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - target/${{ matrix.target }}/release/cross-control
       - name: Package
         shell: bash
         run: |
