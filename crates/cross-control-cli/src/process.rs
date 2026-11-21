@@ -3,7 +3,16 @@
 /// Whether a process with this PID is running.
 #[cfg(unix)]
 pub fn is_alive(pid: u32) -> bool {
-    // Signal 0 checks existence (and permission) without sending anything.
+    // A zombie has exited; only its parent has not collected it yet.
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // The state follows the parenthesised command name.
+        let state = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.trim_start().chars().next());
+        return state.is_some_and(|s| s != 'Z' && s != 'X');
+    }
+    // No procfs (e.g. macOS): signal 0 checks existence (and permission)
+    // without sending anything.
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stdout(std::process::Stdio::null())
@@ -20,7 +29,8 @@ pub fn is_alive(pid: u32) -> bool {
         .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")))
 }
 
-/// Ask the daemon to stop.
+/// Stop the daemon process directly: the fallback for when it does not
+/// answer on the control channel.
 ///
 /// On Unix this sends SIGTERM, which the daemon handles gracefully. Windows
 /// cannot deliver Ctrl+C to another console, so there the process is

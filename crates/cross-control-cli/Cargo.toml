@@ -13,6 +13,11 @@ authors.workspace = true
 name = "cross-control"
 path = "src/main.rs"
 
+# Runs the daemon without a console window (for Windows logon tasks).
+[[bin]]
+name = "cross-controlw"
+path = "src/bin/cross-controlw.rs"
+
 [features]
 # Each native backend only takes effect on its own platform.
 default = ["linux", "windows"]

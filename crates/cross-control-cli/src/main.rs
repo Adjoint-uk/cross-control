@@ -50,7 +50,7 @@ enum Commands {
     /// Start the cross-control daemon.
     Start,
 
-    /// Stop the running daemon.
+    /// Stop the running daemon cleanly, and wait until it has exited.
     Stop,
 
     /// Show daemon status and connected machines.
@@ -97,7 +97,8 @@ enum Commands {
         action: Option<TrustAction>,
     },
 
-    /// Run the daemon as a systemd user service.
+    /// Start the daemon at login: a systemd user service on Linux, a logon
+    /// task on Windows.
     Service {
         #[command(subcommand)]
         action: ServiceAction,
@@ -136,16 +137,18 @@ pub(crate) enum TrustAction {
 
 #[derive(Subcommand, Clone, Copy)]
 pub(crate) enum ServiceAction {
-    /// Print the systemd user unit for this binary (and `--config`).
+    /// Print the definition for this binary (and `--config`): the systemd
+    /// user unit, or the Task Scheduler XML on Windows.
     Unit,
-    /// Install the unit into the user's systemd directory and reload
-    /// systemd. Unchanged units are left alone.
+    /// Install it (a user unit plus `daemon-reload`, or a registered logon
+    /// task). An unchanged definition is left alone.
     Install {
-        /// Also enable and start it (`systemctl --user enable --now`).
+        /// Also start it now (`systemctl --user enable --now`, or running
+        /// the task).
         #[arg(long)]
         enable: bool,
     },
-    /// Stop, disable and remove the unit.
+    /// Stop the daemon and remove the unit or task.
     Uninstall,
 }
 
@@ -168,6 +171,8 @@ async fn main() -> ExitCode {
     };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        // No colour codes in log files (e.g. under `cross-controlw`).
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
@@ -180,7 +185,7 @@ async fn main() -> ExitCode {
     };
     let result = match cli.command {
         Commands::Start => cmd::daemon::start(&ctx).await,
-        Commands::Stop => cmd::daemon::stop(&ctx),
+        Commands::Stop => cmd::daemon::stop(&ctx).await,
         Commands::Status => Ok(cmd::daemon::status(&ctx)),
         Commands::Identity => cmd::identity::show(&ctx),
         Commands::Doctor => Ok(cmd::doctor::run(&ctx)),
@@ -190,7 +195,7 @@ async fn main() -> ExitCode {
         Commands::GenerateCert { output } => cmd::identity::generate_cert(&ctx, &output),
         Commands::Pair { address, name, yes } => cmd::pair::run(&ctx, &address, name, yes).await,
         Commands::Trust { action } => cmd::trust::run(&ctx, action.unwrap_or(TrustAction::List)),
-        Commands::Service { action } => cmd::service::run(&ctx, action),
+        Commands::Service { action } => cmd::service::run(&ctx, action).await,
     };
 
     match result {
