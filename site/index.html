@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Share your keyboard and mouse across machines. A modern, Rust virtual KVM: QUIC transport, always-on TLS 1.3, Wayland-native, zero-config mDNS discovery.">
+<meta name="description" content="Share your keyboard and mouse across Linux and Windows machines. A modern, Rust virtual KVM: QUIC transport, mutual TLS 1.3, Wayland-native, zero-config mDNS discovery.">
 <meta name="theme-color" content="#0A0D13" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#F4F6FA" media="(prefers-color-scheme: light)">
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHJlY3Qgd2lkdGg9JzI0JyBoZWlnaHQ9JzI0JyByeD0nNScgZmlsbD0nJTIzMEEwRDEzJy8+PHBhdGggZD0nTTYgNCBMNiAxOSBMMTAgMTUuNCBMMTIuNyAyMSBMMTUgMjAgTDEyLjMgMTQuNCBMMTggMTQuNCBaJyBmaWxsPSclMjMzQkUwQ0UnLz48L3N2Zz4=">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="cross-control">
 <meta property="og:title" content="cross-control — share your keyboard and mouse across machines">
-<meta property="og:description" content="Share your keyboard and mouse across machines. A modern, Rust virtual KVM: QUIC transport, always-on TLS 1.3, Wayland-native, zero-config mDNS discovery.">
+<meta property="og:description" content="Share your keyboard and mouse across Linux and Windows machines. A modern, Rust virtual KVM: QUIC transport, mutual TLS 1.3, Wayland-native, zero-config mDNS discovery.">
 <meta property="og:url" content="https://cross-control.adjoint.uk/">
 <meta property="og:image" content="https://cross-control.adjoint.uk/og.png">
 <meta property="og:image:width" content="1200">
@@ -18,7 +18,7 @@
 <meta property="og:image:alt" content="cross-control — one keyboard, one mouse, every machine.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="cross-control — a modern Rust virtual KVM">
-<meta name="twitter:description" content="Share your keyboard and mouse across machines. A modern, Rust virtual KVM: QUIC transport, always-on TLS 1.3, Wayland-native, zero-config mDNS discovery.">
+<meta name="twitter:description" content="Share your keyboard and mouse across Linux and Windows machines. A modern, Rust virtual KVM: QUIC transport, mutual TLS 1.3, Wayland-native, zero-config mDNS discovery.">
 <meta name="twitter:image" content="https://cross-control.adjoint.uk/og.png">
 <title>cross-control — share your keyboard and mouse across machines</title>
 <style>
@@ -165,6 +165,9 @@
   .hero { padding: clamp(56px, 9vw, 104px) 0 40px; }
   .hero-grid { display: grid; gap: clamp(36px, 5vw, 56px); grid-template-columns: 1fr; align-items: center; }
   @media (min-width: 940px) { .hero-grid { grid-template-columns: 1.02fr .98fr; } }
+  /* Grid items default to min-width:auto, so long unbreakable content widened the page on phones. */
+  .hero-grid > * { min-width: 0; }
+  .status-pill { max-width: 100%; }
 
   .status-pill {
     display: inline-flex; align-items: center; gap: 8px; margin-bottom: 22px;
@@ -238,6 +241,7 @@
 
   /* ---------- features ---------- */
   .feat-grid { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  .feat code, .phase code { font-family: var(--font-mono); font-size: .85em; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line-soft); }
   @media (min-width: 620px) { .feat-grid { grid-template-columns: 1fr 1fr; } }
   @media (min-width: 960px) { .feat-grid { grid-template-columns: 1fr 1fr 1fr; } }
   .feat {
@@ -343,14 +347,14 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <span class="status-pill"><span class="dot"></span>v0.2.0&#8209;alpha · Linux · core KVM works end&#8209;to&#8209;end</span>
+        <span class="status-pill"><span class="dot"></span>v0.2.0 · Linux &amp; Windows (preview) · downloads for x86_64 &amp; ARM64</span>
         <h1 class="title">Your keyboard and mouse, across every machine on the desk.</h1>
         <p class="lede">A modern, Rust virtual KVM. Push your cursor to the screen edge and it appears on the next machine — no hardware switch, no cables.</p>
         <div class="hero-cta">
           <a class="btn btn-primary" href="#install">Get started</a>
           <a class="btn btn-ghost" href="https://github.com/Adjoint-uk/cross-control" target="_blank" rel="noopener">Star on GitHub ★</a>
         </div>
-        <p class="hero-note">QUIC transport · always-on <b>TLS 1.3</b> · Wayland-native · zero-config mDNS discovery</p>
+        <p class="hero-note">QUIC transport · mutual <b>TLS 1.3</b> · Wayland-native · Windows · zero-config mDNS discovery</p>
       </div>
 
       <div class="demo">
@@ -405,7 +409,7 @@ awaiting cursor…
           <tbody>
             <tr><th scope="row">Maintained</th><td class="no">Dead ’22</td><td>Slow</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="col-hl yes">Active</td></tr>
             <tr><th scope="row">Wayland</th><td class="no">No</td><td>Partial</td><td>Partial</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="col-hl yes">Native</td></tr>
-            <tr><th scope="row">Windows</th><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes</td><td class="col-hl">Planned</td></tr>
+            <tr><th scope="row">Windows</th><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes</td><td class="col-hl yes">Preview</td></tr>
             <tr><th scope="row">Protocol</th><td>Synergy v1</td><td>Synergy v1</td><td>Proprietary</td><td>Custom</td><td>Custom</td><td class="col-hl">QUIC</td></tr>
             <tr><th scope="row">Encryption</th><td>Optional</td><td>Optional</td><td>TLS</td><td>TLS</td><td class="no">None</td><td class="col-hl yes">TLS 1.3 always</td></tr>
             <tr><th scope="row">Discovery</th><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="col-hl yes">mDNS</td></tr>
@@ -426,11 +430,14 @@ awaiting cursor…
       </div>
       <div class="feat-grid">
         <div class="feat"><span class="ic"><span class="sq"></span>TRANSPORT</span><h3>QUIC, not TCP</h3><p>Multiplexed streams, built-in TLS 1.3, and 0-RTT reconnection after a network blip. Control, input, and clipboard ride their own lanes.</p></div>
-        <div class="feat"><span class="ic"><span class="sq"></span>WAYLAND</span><h3>Native from day one</h3><p>Input via evdev/uinput, so it works on Wayland where Barrier and Input Leap fall over — with enhanced support for wlroots compositors.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>PLATFORMS</span><h3>Wayland-native, and Windows</h3><p>On Linux, input goes through evdev/uinput, so it works on Wayland where Barrier and Input Leap fall over. On Windows (preview), low-level hooks and <code>SendInput</code>, started at logon with no console window.</p></div>
         <div class="feat"><span class="ic"><span class="sq"></span>DISCOVERY</span><h3>Zero-config mDNS</h3><p>Machines find each other on the LAN automatically — no static IP in a config file. Discovery only finds peers; it never decides who is trusted.</p></div>
         <div class="feat"><span class="ic"><span class="sq"></span>SECURITY</span><h3>Mutual authentication</h3><p>Both machines prove who they are with pinned certificates — SSH-style pairing, one command. No central authority, no account, no cloud. Keys stay on your machines; traffic is always encrypted.</p></div>
         <div class="feat"><span class="ic"><span class="sq"></span>CLIPBOARD</span><h3>Text, HTML &amp; images</h3><p>Your clipboard follows control across the seam — plain text, rich HTML, and PNG images, synced on hand-off with a configurable size cap.</p></div>
         <div class="feat"><span class="ic"><span class="sq"></span>TOPOLOGY</span><h3>Many machines, many monitors</h3><p>Star topology across any number of boxes, multi-monitor per machine, and edge-based switching just like macOS Universal Control.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>AUTOMATION</span><h3>Deploys like infrastructure</h3><p>Every command speaks <code>--json</code> with stable exit codes. An Ansible role for Linux and a PowerShell module for Windows roll out layouts and trust across a fleet, idempotently.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>OPERATIONS</span><h3>Tells you what's wrong</h3><p><code>cross-control doctor</code> checks devices, permissions, trust and ports, and prints the exact fix. <code>status</code> shows peers and latency live.</p></div>
+        <div class="feat"><span class="ic"><span class="sq"></span>SUPPLY CHAIN</span><h3>Verifiable downloads</h3><p>Release archives for Linux and Windows ship with SHA-256 checksums and signed build provenance; the installers verify before installing.</p></div>
       </div>
     </div>
   </section>
@@ -475,22 +482,27 @@ Peers:   1 connected
       <div>
         <span class="eyebrow">Install</span>
         <h2 style="font-size:clamp(1.7rem,3.2vw,2.4rem);font-weight:800;letter-spacing:-.02em;margin:14px 0 12px;">One command on each machine.</h2>
-        <p style="color:var(--text-dim);margin:0 0 8px;">The script grabs the latest release binary and checks your input permissions. Then generate a cert, drop a small config, and <code style="font-family:var(--font-mono);font-size:.85em;background:var(--surface-2);padding:1px 6px;border-radius:5px;border:1px solid var(--line-soft)">cross-control start</code>.</p>
+        <p style="color:var(--text-dim);margin:0 0 8px;">The installer downloads the latest release, verifies its checksum, and runs <code style="font-family:var(--font-mono);font-size:.85em;background:var(--surface-2);padding:1px 6px;border-radius:5px;border:1px solid var(--line-soft)">cross-control doctor</code> to show anything left to set up. Pair your machines once, then start it at login.</p>
         <ul class="req-list">
-          <li>Linux, x86_64 or aarch64 <span style="color:var(--text-faint)">— Windows &amp; macOS planned</span></li>
-          <li>Your user in the <code>input</code> group</li>
-          <li><code>/dev/uinput</code> readable for virtual devices</li>
-          <li>Optional: <code>systemctl --user enable --now cross-control</code></li>
+          <li><span class="li">Linux, x86_64 or aarch64 — your user in the <code>input</code> group, <code>/dev/uinput</code> writable</span></li>
+          <li><span class="li">Windows 10/11, x86_64 <span style="color:var(--text-faint)">— preview; no admin rights needed</span></span></li>
+          <li><span class="li">macOS <span style="color:var(--text-faint)">— planned</span></span></li>
+          <li><span class="li">Many machines? Use the <a href="https://github.com/Adjoint-uk/cross-control/blob/main/deploy/ansible/roles/cross_control/README.md" target="_blank" rel="noopener">Ansible role</a> or the <a href="https://github.com/Adjoint-uk/cross-control/blob/main/deploy/powershell/README.md" target="_blank" rel="noopener">PowerShell module</a></span></li>
         </ul>
       </div>
       <div class="term" style="align-self:start;">
-        <div class="term-bar"><span class="b"></span><span class="b"></span><span class="b"></span><span class="ttl">install.sh</span></div>
-<pre><span class="cmt"># on both machines</span>
+        <div class="term-bar"><span class="b"></span><span class="b"></span><span class="b"></span><span class="ttl">install</span></div>
+<pre><span class="cmt"># Linux</span>
 <span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com\
 /Adjoint-uk/cross-control/main/install.sh | bash
 
-<span class="prompt">$</span> cross-control generate-cert
-<span class="prompt">$</span> cross-control start
+<span class="cmt"># Windows (PowerShell)</span>
+<span class="prompt">&gt;</span> irm https://raw.githubusercontent.com/Adjoint-uk\
+/cross-control/main/install.ps1 | iex
+
+<span class="cmt"># then, on each machine</span>
+<span class="prompt">$</span> cross-control pair <span class="bb">other-machine</span>
+<span class="prompt">$</span> cross-control service install --enable
 <span class="cmt"># move your cursor to the edge →</span></pre>
       </div>
     </div>
@@ -502,12 +514,12 @@ Peers:   1 connected
       <div class="section-head">
         <span class="eyebrow">Where it's going</span>
         <h2>Honest about the road to 1.0.</h2>
-        <p>The core KVM works end-to-end on Linux today. It's alpha — not yet a daily driver, but moving fast in the open.</p>
+        <p>The core KVM works end to end on Linux, and on Windows as a preview. It's pre-1.0: the wire protocol can still change between minor versions, so upgrade every machine together.</p>
       </div>
       <div class="road">
-        <div class="phase"><span class="st done">Shipped</span><span class="pk">Phase 1 · v0.2.0</span><h3>It works</h3><p>QUIC transport, evdev/uinput capture, multi-hop switching, mDNS discovery, certificate pinning.</p></div>
-        <div class="phase active"><span class="st now">In progress</span><span class="pk">Phase 2 · v0.5.0</span><h3>It's pleasant</h3><p>Clipboard formats, multi-monitor, live status, TOML layouts, systemd service.</p></div>
-        <div class="phase"><span class="st next">Planned</span><span class="pk">Phase 3 · v0.9.0</span><h3>It's portable</h3><p>Windows &amp; macOS input backends, distro packaging, signed release binaries.</p></div>
+        <div class="phase"><span class="st done">Shipped</span><span class="pk">Phase 1 · v0.1</span><h3>It works</h3><p>QUIC transport, evdev/uinput capture, multi-hop switching, mDNS discovery, certificate pinning.</p></div>
+        <div class="phase"><span class="st done">Shipped</span><span class="pk">Phase 2 · v0.2.0</span><h3>It's pleasant</h3><p>Clipboard text, HTML &amp; images, multi-monitor, live status, validated layouts, <code>doctor</code>, start at login, clean stop.</p></div>
+        <div class="phase active"><span class="st now">In progress</span><span class="pk">Phase 3</span><h3>It's portable</h3><p>Shipped: Windows preview, Linux ARM64, release downloads with signed provenance. Next: real-hardware validation, macOS, distro packages.</p></div>
         <div class="phase"><span class="st next">Planned</span><span class="pk">Phase 4 · v1.0</span><h3>It's stable</h3><p>Frozen wire protocol, documented security model, fuzzing, a SemVer commitment.</p></div>
       </div>
     </div>
@@ -521,8 +533,8 @@ Peers:   1 connected
         <h2 style="margin-top:16px;">Reclaim the desk.</h2>
         <p>One keyboard, one mouse, every machine. Encrypted, discoverable, and open source.</p>
         <div class="hero-cta">
-          <a class="btn btn-primary" href="https://github.com/Adjoint-uk/cross-control" target="_blank" rel="noopener">View on GitHub ↗</a>
-          <a class="btn btn-ghost" href="#install">Read the setup guide</a>
+          <a class="btn btn-primary" href="https://github.com/Adjoint-uk/cross-control/releases/latest" target="_blank" rel="noopener">Download v0.2.0 ↗</a>
+          <a class="btn btn-ghost" href="https://github.com/Adjoint-uk/cross-control/blob/main/docs/setup-guide.md" target="_blank" rel="noopener">Read the setup guide</a>
         </div>
       </div>
     </div>
@@ -544,6 +556,8 @@ Peers:   1 connected
         <a href="https://github.com/Adjoint-uk/cross-control" target="_blank" rel="noopener">GitHub</a>
         <a href="https://github.com/Adjoint-uk/cross-control/issues" target="_blank" rel="noopener">Issues</a>
         <a href="https://github.com/Adjoint-uk/cross-control/blob/main/docs/setup-guide.md" target="_blank" rel="noopener">Setup guide</a>
+        <a href="https://github.com/Adjoint-uk/cross-control/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/Adjoint-uk/cross-control/blob/main/docs/windows.md" target="_blank" rel="noopener">Windows</a>
         <a href="https://github.com/Adjoint-uk/cross-control/blob/main/DESIGN.md" target="_blank" rel="noopener">Design</a>
       </div>
     </div>
