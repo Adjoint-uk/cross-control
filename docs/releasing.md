@@ -49,6 +49,11 @@ gh attestation verify cross-control-0.3.0-x86_64-unknown-linux-gnu.tar.gz --repo
    git push origin v0.3.0
    ```
 
+   Or, without pushing a tag: in the Actions tab, run the **Release**
+   workflow on `main` with **publish** ticked. The workflow then creates the
+   tag `vX.Y.Z` itself, for the version in the code, on the commit it built.
+   It refuses if that tag already exists or the run is not on `main`.
+
 The workflow then checks that the tag matches the version in the code, and
 refuses to release if it does not. It also checks that the CHANGELOG has a
 section for it, which becomes the release notes. It builds and smoke-tests

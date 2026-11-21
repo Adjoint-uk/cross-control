@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Releases can be published from the Actions tab.** Run the Release workflow on `main` with "publish" ticked; it creates the `vX.Y.Z` tag for the version in the code. This suits environments that cannot push tags.
+
 ## [0.2.0] - 2026-11-21
 
 The first release with ready-built downloads, for Linux (x86_64, aarch64) and Windows (x86_64).
