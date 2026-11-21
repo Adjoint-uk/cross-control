@@ -1,9 +1,14 @@
 name: Release
 
 # A pushed tag vX.Y.Z builds every target, smoke-tests the archives, and
-# publishes a GitHub release with checksums and build provenance. Pull
-# requests that touch the release machinery, and manual runs, do the same
-# as a dry run: everything except publishing.
+# publishes a GitHub release with checksums and build provenance.
+#
+# The same can be started from the Actions tab ("Run workflow" on main with
+# "publish" ticked): the workflow then creates the tag vX.Y.Z itself, for
+# the version in the code, on the commit it ran on.
+#
+# Pull requests that touch the release machinery, and manual runs without
+# "publish", are dry runs: everything except publishing.
 
 on:
   push:
@@ -15,6 +20,11 @@ on:
       - "install.sh"
       - "install.ps1"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a release (tag vX.Y.Z for the version in the code) — main only"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,9 +43,22 @@ jobs:
       - uses: actions/checkout@v4
       - id: version
         name: Check the version
+        env:
+          PUBLISH_INPUT: ${{ inputs.publish }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             version=$(python3 scripts/release/release.py version --tag "$GITHUB_REF")
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$PUBLISH_INPUT" == true ]]; then
+            if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+              echo "::error::Publishing is only allowed from main (ran on $GITHUB_REF)"
+              exit 1
+            fi
+            version=$(python3 scripts/release/release.py version)
+            if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+              echo "::error::Tag v$version already exists; bump the version first"
+              exit 1
+            fi
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
             version=$(python3 scripts/release/release.py version)
@@ -208,8 +231,12 @@ jobs:
         run: |
           prerelease=()
           [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          # A pushed tag must already exist; a manual run creates it here,
+          # on the commit that was built.
+          tag=(--verify-tag)
+          [[ "$GITHUB_REF" == refs/tags/* ]] || tag=(--target "$GITHUB_SHA")
           gh release create "v$VERSION" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "cross-control $VERSION" \
             --notes-file notes.md \
-            --verify-tag "${prerelease[@]}"
+            "${tag[@]}" "${prerelease[@]}"
