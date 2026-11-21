@@ -486,13 +486,13 @@ Peers:   1 connected
         <ul class="req-list">
           <li><span class="li">Linux, x86_64 or aarch64 — your user in the <code>input</code> group, <code>/dev/uinput</code> writable</span></li>
           <li><span class="li">Windows 10/11, x86_64 <span style="color:var(--text-faint)">— preview; no admin rights needed</span></span></li>
-          <li><span class="li">macOS <span style="color:var(--text-faint)">— planned</span></span></li>
+          <li><span class="li">macOS 11+, Apple silicon or Intel <span style="color:var(--text-faint)">— preview; downloads from the next release</span></span></li>
           <li><span class="li">Many machines? Use the <a href="https://github.com/Adjoint-uk/cross-control/blob/main/deploy/ansible/roles/cross_control/README.md" target="_blank" rel="noopener">Ansible role</a> or the <a href="https://github.com/Adjoint-uk/cross-control/blob/main/deploy/powershell/README.md" target="_blank" rel="noopener">PowerShell module</a></span></li>
         </ul>
       </div>
       <div class="term" style="align-self:start;">
         <div class="term-bar"><span class="b"></span><span class="b"></span><span class="b"></span><span class="ttl">install</span></div>
-<pre><span class="cmt"># Linux</span>
+<pre><span class="cmt"># Linux, macOS</span>
 <span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com\
 /Adjoint-uk/cross-control/main/install.sh | bash
 
@@ -519,7 +519,7 @@ Peers:   1 connected
       <div class="road">
         <div class="phase"><span class="st done">Shipped</span><span class="pk">Phase 1 · v0.1</span><h3>It works</h3><p>QUIC transport, evdev/uinput capture, multi-hop switching, mDNS discovery, certificate pinning.</p></div>
         <div class="phase"><span class="st done">Shipped</span><span class="pk">Phase 2 · v0.2.0</span><h3>It's pleasant</h3><p>Clipboard text, HTML &amp; images, multi-monitor, live status, validated layouts, <code>doctor</code>, start at login, clean stop.</p></div>
-        <div class="phase active"><span class="st now">In progress</span><span class="pk">Phase 3</span><h3>It's portable</h3><p>Shipped: Windows preview, Linux ARM64, release downloads with signed provenance. Next: real-hardware validation, macOS, distro packages.</p></div>
+        <div class="phase active"><span class="st now">In progress</span><span class="pk">Phase 3</span><h3>It's portable</h3><p>Shipped: Windows preview, Linux ARM64, release downloads with signed provenance. macOS preview with launchd start at login. Next: real-hardware validation, distro packages.</p></div>
         <div class="phase"><span class="st next">Planned</span><span class="pk">Phase 4 · v1.0</span><h3>It's stable</h3><p>Frozen wire protocol, documented security model, fuzzing, a SemVer commitment.</p></div>
       </div>
     </div>

@@ -25,6 +25,8 @@
 
 pub mod capture;
 pub mod emulation;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 use core_graphics::display::CGDisplay;
 use cross_control_types::{DeviceCapability, DeviceId, DeviceInfo};

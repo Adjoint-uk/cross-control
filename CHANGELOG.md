@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - events the daemon posts carry a marker its own tap ignores, so being controlled never echoes back. A tap that macOS disables (after a slow callback or secure input) is re-enabled.
 - **Keymap** (`mac_map`): pure code, unit-tested on every platform. It covers every named key, PC-only keys (Insert as Help, Num Lock as Clear, Print Screen / Scroll Lock / Pause as F13–F15), left/right modifier flags, buttons and scroll signs.
 - **`doctor` on macOS** reports the Input Monitoring and Accessibility permissions, with the exact System Settings path to fix them. The first start shows the system prompts.
-- **CI builds and tests on macOS.** Tests that need the desktop skip when the runner lacks the permissions.
+- **Start at login on macOS:** `cross-control service install --enable` writes and loads a launchd agent (`~/Library/LaunchAgents/uk.adjoint.cross-control.plist`) that runs in the login session. launchd restarts the daemon on failure but not after `stop`. Reinstalling an unchanged agent does nothing.
+- **macOS downloads** for Apple silicon (`aarch64-apple-darwin`) and Intel (`x86_64-apple-darwin`). `install.sh` now supports macOS, and picks the Apple silicon build even from a shell running under Rosetta.
+- **CI builds and tests on macOS**, including an end-to-end test of the real event tap and event posting between two daemons, and of the launchd agent (install, start, clean stop, uninstall). Tests that need the desktop skip when the runner lacks the permissions.
 - **[docs/macos.md](docs/macos.md)** covers how it works, permissions, setup and limits.
 
 ### Fixed

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cross-control installer for Linux.
+# cross-control installer for Linux and macOS.
 #
 #   curl -fsSL https://raw.githubusercontent.com/Adjoint-uk/cross-control/main/install.sh | bash
 #
@@ -10,8 +10,9 @@
 # Environment:
 #   CROSS_CONTROL_VERSION      version to install, e.g. 0.3.0 (default: latest)
 #   CROSS_CONTROL_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
-#   CROSS_CONTROL_SERVICE      "1" to also install and start the systemd user
-#                              service without asking; "0" to skip it
+#   CROSS_CONTROL_SERVICE      "1" to also start cross-control at login (a
+#                              systemd user service, or a launchd agent on
+#                              macOS) without asking; "0" to skip it
 #   CROSS_CONTROL_DOWNLOAD_BASE  URL holding the archives and SHA256SUMS, for
 #                              an internal mirror (default: the GitHub release)
 set -euo pipefail
@@ -27,11 +28,33 @@ error() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || error "$1 is required"; }
 
 detect_target() {
-    case "$(uname -m)" in
-        x86_64 | amd64) echo "x86_64-unknown-linux-gnu" ;;
-        aarch64 | arm64) echo "aarch64-unknown-linux-gnu" ;;
-        *) error "unsupported architecture: $(uname -m) (x86_64 and aarch64 are supported)" ;;
+    local os arch
+    case "$(uname -s)" in
+        Linux) os="unknown-linux-gnu" ;;
+        Darwin) os="apple-darwin" ;;
+        *) error "unsupported system: $(uname -s) (this installer is for Linux and macOS; on Windows use install.ps1)" ;;
     esac
+    arch="$(uname -m)"
+    # A shell running under Rosetta reports x86_64 on Apple silicon.
+    if [ "$os" = apple-darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
+        arch=arm64
+    fi
+    case "$arch" in
+        x86_64 | amd64) echo "x86_64-$os" ;;
+        aarch64 | arm64) echo "aarch64-$os" ;;
+        *) error "unsupported architecture: $arch (x86_64 and aarch64 are supported)" ;;
+    esac
+}
+
+# Where cross-control looks for its configuration (as `cross-control` does).
+config_dir() {
+    if [ -n "${CROSS_CONTROL_CONFIG_DIR:-}" ]; then
+        echo "$CROSS_CONTROL_CONFIG_DIR"
+    elif [ "$(uname -s)" = Darwin ]; then
+        echo "$HOME/Library/Application Support/cross-control"
+    else
+        echo "${XDG_CONFIG_HOME:-$HOME/.config}/cross-control"
+    fi
 }
 
 latest_version() {
@@ -49,7 +72,6 @@ sha256() {
 }
 
 main() {
-    [ "$(uname -s)" = Linux ] || error "this installer is for Linux; on Windows use install.ps1"
     need curl
     need tar
 
@@ -83,7 +105,8 @@ main() {
     local exe="$install_dir/cross-control"
     info "Installed $("$exe" --version) to $exe"
 
-    local config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/cross-control"
+    local config_dir
+    config_dir="$(config_dir)"
     if [ ! -e "$config_dir/config.toml" ]; then
         mkdir -p "$config_dir"
         install -m 0600 "$work/cross-control-${version}-${target}/config.example.toml" "$config_dir/config.example.toml"
@@ -99,9 +122,20 @@ main() {
     info "Checking this machine (cross-control doctor):"
     "$exe" doctor || true
 
-    local service="${CROSS_CONTROL_SERVICE:-}"
-    if [ -z "$service" ] && [ -t 0 ] && command -v systemctl >/dev/null 2>&1; then
-        read -rp "Start cross-control at login (systemd user service)? [y/N] " answer
+    if [ "$(uname -s)" = Darwin ]; then
+        info "macOS asks for two permissions for $exe:"
+        info "  Input Monitoring (to capture) and Accessibility (to control);"
+        info "  grant them in System Settings > Privacy & Security, then run doctor again."
+    fi
+
+    local service="${CROSS_CONTROL_SERVICE:-}" kind=""
+    if [ "$(uname -s)" = Darwin ]; then
+        kind="launchd agent"
+    elif command -v systemctl >/dev/null 2>&1; then
+        kind="systemd user service"
+    fi
+    if [ -z "$service" ] && [ -t 0 ] && [ -n "$kind" ]; then
+        read -rp "Start cross-control at login ($kind)? [y/N] " answer
         if [[ "$answer" =~ ^[Yy] ]]; then service=1; fi
     fi
     if [ "$service" = 1 ]; then
