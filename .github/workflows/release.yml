@@ -19,6 +19,9 @@ on:
       - "scripts/release/**"
       - "install.sh"
       - "install.ps1"
+      - "packaging/**"
+      - "Formula/**"
+      - "bucket/**"
   workflow_dispatch:
     inputs:
       publish:
@@ -31,6 +34,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  NFPM_VERSION: "2.43.0"
 
 jobs:
   prepare:
@@ -124,6 +128,40 @@ jobs:
           python3 scripts/release/release.py package \
             --target ${{ matrix.target }} --version "$VERSION" \
             --bin-dir target/${{ matrix.target }}/release --out dist
+      - name: Linux packages (.deb, .rpm)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            x86_64-*) arch=x86_64; sum=a80d5f724ed70b192ffa8a2bde469c013cef559c8afa3441eb51dd9a918beb6b ;;
+            aarch64-*) arch=arm64; sum=cfafa3bee852c45a52f2ebbfb063d715235f934d082dc64301a1b9957f3a4032 ;;
+          esac
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.tgz" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${arch}.tar.gz"
+          echo "$sum  $RUNNER_TEMP/nfpm.tgz" | sha256sum --check
+          tar xzf "$RUNNER_TEMP/nfpm.tgz" -C "$RUNNER_TEMP" nfpm
+          python3 scripts/release/release.py linux-packages \
+            --target ${{ matrix.target }} --version "$VERSION" \
+            --bin-dir target/${{ matrix.target }}/release --out dist --nfpm "$RUNNER_TEMP/nfpm"
+      - name: Install the .deb (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./dist/cross-control_*.deb
+          test "$(cross-control --version)" = "cross-control $VERSION"
+          test -f /usr/lib/udev/rules.d/70-cross-control.rules
+          test -f /usr/lib/modules-load.d/cross-control.conf
+          sudo apt-get remove -y cross-control
+          if command -v cross-control; then echo "still installed after remove"; exit 1; fi
+      - name: Install the .rpm (Fedora)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" -e VERSION fedora:latest sh -euc '
+            dnf install -y /dist/cross-control-*.rpm
+            test "$(cross-control --version)" = "cross-control $VERSION"
+            test -f /usr/lib/udev/rules.d/70-cross-control.rules
+            dnf remove -y cross-control
+            if command -v cross-control; then echo "still installed after remove"; exit 1; fi'
       - name: Check the binary's architecture (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -193,6 +231,41 @@ jobs:
           if (-not (Test-Path (Join-Path $dest 'cross-controlw.exe'))) { throw 'cross-controlw.exe was not installed' }
           Import-Module CrossControl -Force
           if (-not (Get-Command Enable-CrossControlAutostart -ErrorAction SilentlyContinue)) { throw 'the module was not installed' }
+      - name: Homebrew formula from the archive
+        if: matrix.target == 'aarch64-apple-darwin'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_FROM_API: "1"
+          HOMEBREW_NO_ANALYTICS: "1"
+        run: |
+          set -euo pipefail
+          brew tap-new --no-git local/cross-control
+          tap="$(brew --repository)/Library/Taps/local/homebrew-cross-control"
+          python3 scripts/release/release.py homebrew --version "$VERSION" \
+            --sums mirror/SHA256SUMS --base-url http://127.0.0.1:18765 --partial \
+            > "$tap/Formula/cross-control.rb"
+          brew install local/cross-control/cross-control
+          test "$("$(brew --prefix)/bin/cross-control" --version)" = "cross-control $VERSION"
+          brew test local/cross-control/cross-control
+          brew uninstall cross-control
+          brew untap local/cross-control
+      - name: Scoop manifest from the archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-RestMethod https://get.scoop.sh -OutFile "$env:RUNNER_TEMP/install-scoop.ps1"
+          & "$env:RUNNER_TEMP/install-scoop.ps1" -RunAsAdmin
+          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
+          $manifest = Join-Path $env:RUNNER_TEMP 'cross-control.json'
+          python scripts/release/release.py scoop --version $env:VERSION `
+            --sums mirror/SHA256SUMS --base-url http://127.0.0.1:18765 |
+            Set-Content -Encoding utf8 $manifest
+          scoop install $manifest
+          $version = cross-control --version
+          if ($version -ne "cross-control $env:VERSION") { throw "unexpected version: $version" }
+          if (-not (Get-Command cross-controlw -ErrorAction SilentlyContinue)) { throw 'cross-controlw is not on PATH' }
+          scoop uninstall cross-control
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}
@@ -205,7 +278,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash -n install.sh
-      - run: shellcheck install.sh
+      - run: shellcheck install.sh packaging/linux/postinstall.sh
+      - name: Homebrew formula and Scoop manifest are well-formed
+        run: |
+          ruby -c Formula/cross-control.rb
+          python3 -m json.tool bucket/cross-control.json > /dev/null
       - name: install.ps1 parses
         shell: pwsh
         run: |
@@ -222,9 +299,13 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      pull-requests: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
       - uses: actions/download-artifact@v4
         with:
           pattern: dist-*
@@ -243,7 +324,7 @@ jobs:
       - name: Build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/cross-control-*
+          subject-path: dist/cross-control*
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -259,3 +340,26 @@ jobs:
             --title "cross-control $VERSION" \
             --notes-file notes.md \
             "${tag[@]}" "${prerelease[@]}"
+      - name: Update the Homebrew formula and Scoop manifest
+        # Opens a pull request; merging it is what users of the tap and the
+        # bucket pick up. If the repository does not let Actions open pull
+        # requests, run the two release.py commands below and commit the
+        # result by hand.
+        continue-on-error: true
+        working-directory: repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/release.py homebrew --version "$VERSION" --sums ../dist/SHA256SUMS > Formula/cross-control.rb
+          python3 scripts/release/release.py scoop --version "$VERSION" --sums ../dist/SHA256SUMS > bucket/cross-control.json
+          if git diff --quiet; then echo "already up to date"; exit 0; fi
+          branch="packaging/v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "Homebrew and Scoop: cross-control $VERSION"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "Homebrew and Scoop: cross-control $VERSION" \
+            --body "Points the Homebrew formula and the Scoop manifest at the v$VERSION release, with its checksums. Generated by the release workflow."

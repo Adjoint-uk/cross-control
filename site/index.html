@@ -500,6 +500,11 @@ Peers:   1 connected
 <span class="prompt">&gt;</span> irm https://raw.githubusercontent.com/Adjoint-uk\
 /cross-control/main/install.ps1 | iex
 
+<span class="cmt"># or with a package manager</span>
+<span class="prompt">$</span> brew tap adjoint-uk/cross-control https://github.com\
+/Adjoint-uk/cross-control &amp;&amp; brew install cross-control
+<span class="cmt"># .deb / .rpm and Scoop: see the README</span>
+
 <span class="cmt"># then, on each machine</span>
 <span class="prompt">$</span> cross-control pair <span class="bb">other-machine</span>
 <span class="prompt">$</span> cross-control service install --enable

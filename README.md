@@ -69,11 +69,40 @@ for the current user without needing admin rights, then run
 [CrossControl PowerShell module](deploy/powershell/README.md) is installed
 too. Set `CROSS_CONTROL_VERSION` to install a specific version.
 
+### Package managers
+
+Homebrew (macOS and Linux):
+
+```bash
+brew tap Adjoint-uk/cross-control https://github.com/Adjoint-uk/cross-control
+brew install cross-control
+```
+
+Scoop (Windows):
+
+```powershell
+scoop bucket add cross-control https://github.com/Adjoint-uk/cross-control
+scoop install cross-control
+```
+
+Debian / Ubuntu and Fedora / RHEL: download the `.deb` or `.rpm` from the
+[latest release](https://github.com/Adjoint-uk/cross-control/releases/latest)
+and install it:
+
+```bash
+sudo apt install ./cross-control_*_amd64.deb      # or: sudo dnf install ./cross-control-*.rpm
+sudo usermod -aG input "$USER"                    # then log out and back in
+```
+
+The packages also install the udev rule and boot-time `uinput` loading that
+the [permissions setup](#linux-permissions-setup) below does by hand. Only
+joining the `input` group is left to you.
+
 ### Prebuilt binaries
 
 [GitHub Releases](https://github.com/Adjoint-uk/cross-control/releases) has
-archives for Linux (x86_64, aarch64) and Windows (x86_64), with
-`SHA256SUMS` and signed build provenance; see
+archives for Linux (x86_64, aarch64), Windows (x86_64) and macOS (Apple
+silicon, Intel), with `SHA256SUMS` and signed build provenance; see
 [releasing](docs/releasing.md#what-a-release-contains) for how to verify
 them.
 
