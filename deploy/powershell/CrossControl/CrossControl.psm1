@@ -509,8 +509,12 @@ function Start-CrossControl {
         }
         else {
             $launcher = Join-Path (Split-Path -Parent $exe) 'cross-controlw.exe'
-            $quoted = $startArgs | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }
-            Start-Process -FilePath $launcher -ArgumentList $quoted | Out-Null
+            $process = @{ FilePath = $launcher }
+            # Windows PowerShell 5.1 rejects an empty -ArgumentList.
+            if ($startArgs) {
+                $process.ArgumentList = $startArgs | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }
+            }
+            Start-Process @process | Out-Null
         }
     }
     else {
