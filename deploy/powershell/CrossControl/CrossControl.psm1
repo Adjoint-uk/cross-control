@@ -104,6 +104,15 @@ function Get-Field($Item, [string]$Name, $Default = $null) {
     if ($property) { $property.Value } else { $Default }
 }
 
+# Run a native command, discarding its output; return whether it succeeded.
+# Windows PowerShell 5.1 turns a native command's stderr into an error that
+# would stop a caller using $ErrorActionPreference = 'Stop'.
+function Invoke-NativeQuiet([string]$Command, [string[]]$Arguments) {
+    $ErrorActionPreference = 'Continue'
+    & $Command @Arguments 2>&1 | Out-Null
+    $LASTEXITCODE -eq 0
+}
+
 function Test-FileContent([string]$Path, [string]$Content) {
     (Test-Path -LiteralPath $Path) -and
         ([System.IO.File]::ReadAllText($Path) -ceq $Content)
@@ -492,9 +501,11 @@ function Start-CrossControl {
     if ($ConfigPath) { $startArgs += @('--config', $ConfigPath) }
 
     if ($script:IsWindowsHost) {
-        & schtasks.exe /Query /TN cross-control *> $null
-        if ($LASTEXITCODE -eq 0 -and -not $ConfigPath) {
-            & schtasks.exe /Run /TN cross-control | Out-Null
+        $hasTask = Invoke-NativeQuiet schtasks.exe '/Query', '/TN', 'cross-control'
+        if ($hasTask -and -not $ConfigPath) {
+            if (-not (Invoke-NativeQuiet schtasks.exe '/Run', '/TN', 'cross-control')) {
+                throw 'Could not run the cross-control logon task.'
+            }
         }
         else {
             $launcher = Join-Path (Split-Path -Parent $exe) 'cross-controlw.exe'
@@ -503,9 +514,12 @@ function Start-CrossControl {
         }
     }
     else {
-        & systemctl --user cat cross-control.service *> $null
-        if ($LASTEXITCODE -eq 0 -and -not $ConfigPath) {
-            & systemctl --user start cross-control.service
+        $hasUnit = (Get-Command systemctl -ErrorAction SilentlyContinue) -and
+            (Invoke-NativeQuiet systemctl '--user', 'cat', 'cross-control.service')
+        if ($hasUnit -and -not $ConfigPath) {
+            if (-not (Invoke-NativeQuiet systemctl '--user', 'start', 'cross-control.service')) {
+                throw 'Could not start the cross-control systemd user service.'
+            }
         }
         else {
             $log = Join-Path ([System.IO.Path]::GetTempPath()) "cross-control-$PID.log"
