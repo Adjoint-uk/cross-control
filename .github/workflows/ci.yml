@@ -101,3 +101,10 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: ./deploy/windows/tests/logon-task.ps1 -Bin target/debug
+      - name: PowerShell module end-to-end (PowerShell 7)
+        shell: pwsh
+        run: ./deploy/powershell/tests/run.ps1 -Bin target/debug
+      - name: PowerShell module end-to-end (Windows PowerShell 5.1)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: ./deploy/powershell/tests/run.ps1 -Bin target/debug

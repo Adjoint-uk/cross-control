@@ -141,6 +141,13 @@ peers.
 | 4 | invalid or missing configuration |
 | 5 | peer not authorized |
 
+## PowerShell module
+
+For Windows (and pwsh anywhere), the
+[CrossControl module](../deploy/powershell/README.md) wraps these commands in
+idempotent functions that report `Changed`. Its remoting example deploys a
+layout to a fleet.
+
 ## Ansible role
 
 A ready-made role lives in [`deploy/ansible`](../deploy/ansible): it

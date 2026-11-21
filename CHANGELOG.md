@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — PowerShell module
+
+- **`CrossControl` module** (`deploy/powershell`): idempotent functions over the CLI's `--json` interface. Each reports `Changed`, and those that make changes support `-WhatIf`.
+  - It installs the binaries, restarting a running daemon around the copy.
+  - It writes `config.toml`, validated before it replaces the current file.
+  - It manages trust, either one machine at a time or authoritatively.
+  - It starts, stops and restarts the daemon, and manages the logon task.
+- **Fleet deployment over PowerShell remoting** (`examples/Deploy-CrossControl.ps1`), the counterpart of the Ansible role.
+- **CI runs the module's end-to-end test** on Windows PowerShell 5.1, and on PowerShell 7 on Windows and Linux. The test deploys two machines that must connect to each other.
+
 ### Added — clean stop everywhere; start at logon on Windows
 
 - **Local control channel.** The daemon listens on a Unix socket in the runtime directory, or on Windows a named pipe that refuses network clients.

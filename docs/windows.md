@@ -64,6 +64,14 @@ nothing if the task is already up to date (`"changed": false` with
 (a named pipe that refuses network clients). The daemon then releases input
 and closes its connections, and `cross-controlw` exits with it.
 
+## PowerShell
+
+The [CrossControl module](../deploy/powershell/README.md) wraps install,
+layout, trust and the logon task in idempotent functions. Its
+[example](../deploy/powershell/examples/Deploy-CrossControl.ps1) deploys a
+whole layout to many machines over PowerShell remoting, as the Ansible role
+does on Linux.
+
 ## Automated testing on real Windows
 
 Every pull request runs an end-to-end test on CI's Windows runner (a fresh
