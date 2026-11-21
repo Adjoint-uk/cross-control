@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — clean stop everywhere; start at logon on Windows
+
+- **Local control channel.** The daemon listens on a Unix socket in the runtime directory, or on Windows a named pipe that refuses network clients.
+  - `cross-control stop` uses it to ask the daemon to shut down cleanly, including on Windows, which has no SIGTERM. `stop` waits until the process has exited and reports `"graceful"` with `--json`. Only an unresponsive daemon is terminated.
+  - It is also the single-instance lock: a second `start` fails with "already running".
+- **`service install` on Windows** registers a Task Scheduler task that runs at logon in the user's desktop session. A Windows service would run in session 0, where it can neither capture nor inject input. `service unit` prints the task XML; `service uninstall` stops the daemon and removes the task.
+- **`cross-controlw`** runs the daemon without a console window, for the logon task:
+  - it logs to `cross-control.log` in the runtime directory;
+  - it restarts the daemon on failure, but not on configuration errors;
+  - `--env NAME=VALUE` passes directory overrides through.
+- **CI registers, starts, stops and removes the real logon task** on the Windows runner (`deploy/windows/tests/logon-task.ps1`).
+
+### Fixed
+
+- **`stop` and `status` counted a zombie process as running.** On Linux, a daemon that had exited but not yet been reaped by its parent still looked alive.
+- **Log files no longer get colour codes** when stderr is not a terminal.
+
 ### Added — automated end-to-end testing on real Windows
 
 - **`windows_e2e` test** runs on CI's Windows runner:

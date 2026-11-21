@@ -97,3 +97,7 @@ jobs:
           # The Windows runner has an interactive desktop: tests that need
           # one must run there, not skip.
           CROSS_CONTROL_REQUIRE_DESKTOP: ${{ matrix.os == 'windows-latest' && '1' || '' }}
+      - name: Logon task end-to-end
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./deploy/windows/tests/logon-task.ps1 -Bin target/debug

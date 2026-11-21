@@ -95,13 +95,32 @@ Exit code 0 when the daemon is running, 3 when it is not (the LSB
 convention), so it doubles as a health check. `--json` adds peers, latency
 and focus.
 
+### `stop`
+
+Asks the running daemon to shut down over its local control channel (a
+Unix socket in the runtime directory, or a named pipe on Windows), then
+waits until the process has exited. `--json` reports
+`{"stopped": PID, "graceful": true}`. If the daemon does not answer, the
+process is terminated instead (`"graceful": false`). Exit code 3 if the
+daemon is not running.
+
+The control channel is also the single-instance lock: a second `start` for
+the same runtime directory fails with "already running".
+
 ### `service unit` / `service install [--enable]` / `service uninstall`
 
-Generates a systemd user unit that runs *this* binary (with `--config`, if
-given). `install` writes it to `~/.config/systemd/user/` and reloads systemd
-only if it changed (`{"changed": …}`); `--enable` also runs
-`systemctl --user enable --now`. To manage the unit yourself, template the
-output of `service unit`.
+Starts the daemon at login, running *this* binary (with `--config`, if
+given, and any directory overrides):
+
+- **Linux:** a systemd user unit. `install` writes it to
+  `~/.config/systemd/user/` and reloads systemd only if it changed
+  (`{"changed": …}`); `--enable` also runs `systemctl --user enable --now`.
+- **Windows:** a Task Scheduler logon task running `cross-controlw.exe` in
+  the user's session; see [Windows](windows.md#start-at-logon). `install`
+  registers it only if it changed; `--enable` also starts it.
+
+`service unit` prints the definition (unit file, or task XML), so you can
+template it yourself instead.
 
 ## Headless smoke tests
 

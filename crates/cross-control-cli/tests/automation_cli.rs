@@ -211,6 +211,64 @@ fn status_and_stop_report_not_running() {
     assert_eq!(code, 3, "{stderr}");
 }
 
+/// The real daemon, headless: `start` runs, a second `start` is refused,
+/// `status` sees it, and `stop` shuts it down cleanly over the control
+/// channel and waits for it to exit.
+#[test]
+fn daemon_starts_once_and_stops_gracefully() {
+    let home = Home::new("lifecycle");
+    let config = home.write(
+        "etc/cc.toml",
+        "[identity]\nname = \"lifecycle\"\n\
+         [daemon]\nbind = \"127.0.0.1\"\nport = 0\ndiscovery = false\n\
+         [input]\nbackend = \"none\"\n\
+         [clipboard]\nenabled = false\n",
+    );
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_cross-control"))
+        .args(["start", "--config", s(&config)])
+        .env("CROSS_CONTROL_CONFIG_DIR", home.config_dir())
+        .env("CROSS_CONTROL_RUNTIME_DIR", home.0.join("run"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+
+    // Wait for it to come up.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (code, _, _) = home.run(&["status"]);
+        if code == 0 {
+            break;
+        }
+        assert!(
+            daemon.try_wait().unwrap().is_none(),
+            "the daemon exited during startup"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let (code, _, stderr) = home.run(&["start", "--config", s(&config)]);
+    assert_ne!(code, 0, "a second daemon must not start");
+    assert!(stderr.contains("already running"), "{stderr}");
+
+    let doc = home.json(&["stop"], 0);
+    assert_eq!(doc["graceful"], true, "{doc}");
+    assert_eq!(doc["stopped"], daemon.id());
+    // `stop` returns only once the daemon has gone, and it exited cleanly.
+    let status = daemon
+        .try_wait()
+        .unwrap()
+        .expect("daemon still running after stop");
+    assert!(status.success(), "{status}");
+
+    let (code, _, _) = home.run(&["status"]);
+    assert_eq!(code, 3);
+}
+
 // systemd units are Linux-only.
 #[cfg(unix)]
 #[test]

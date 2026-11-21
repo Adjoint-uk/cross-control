@@ -34,6 +34,36 @@ through Windows Defender Firewall (UDP 24800) when prompted.
 Run `cross-control start` in a terminal; `cross-control status` and
 `cross-control stop` work from another terminal.
 
+## Start at logon
+
+```powershell
+cross-control service install --enable
+```
+
+This registers a Task Scheduler task, `cross-control`, that runs at your
+logon, as you, in your desktop session. It is not a Windows *service*:
+services run in session 0, away from the desktop, where they can neither
+capture nor inject input. The task starts `cross-controlw.exe`, which must
+sit next to `cross-control.exe` (`cargo install` puts both there):
+
+- it runs the daemon without a console window;
+- it appends the daemon's log to `cross-control.log` in the runtime
+  directory (on Windows that is the configuration directory,
+  `%APPDATA%\cross-control\`, unless `CROSS_CONTROL_RUNTIME_DIR` is set);
+- it restarts the daemon if it fails, except for configuration errors,
+  which a restart cannot fix.
+
+`--config` and the `CROSS_CONTROL_CONFIG_DIR` / `CROSS_CONTROL_RUNTIME_DIR`
+overrides are carried into the task. `--enable` also starts it now;
+without it, it starts at your next logon. Re-running `install` changes
+nothing if the task is already up to date (`"changed": false` with
+`--json`). `cross-control service unit` prints the task XML, and
+`cross-control service uninstall` stops the daemon and removes the task.
+
+`cross-control stop` asks the daemon to shut down over its control channel
+(a named pipe that refuses network clients). The daemon then releases input
+and closes its connections, and `cross-controlw` exits with it.
+
 ## Automated testing on real Windows
 
 Every pull request runs an end-to-end test on CI's Windows runner (a fresh
@@ -71,10 +101,6 @@ These are Windows rules for normal (non-elevated) programs:
   window from another machine does nothing.
 - **Secure desktop:** UAC prompts, Ctrl+Alt+Del and the lock screen cannot be
   reached.
-- **`stop` terminates the process.** Windows cannot deliver Ctrl+C to another
-  console, so `cross-control stop` ends the daemon instead of asking it to
-  shut down; peers see the connection drop and reconnect when it restarts.
-- No Windows service yet: start it from a terminal or Task Scheduler.
 
-Lifting the first two needs a signed binary with UI access, or a service
-with a helper in the user's session — planned.
+Lifting these needs a signed binary with UI access, or a service with a
+helper in the user's session — planned.

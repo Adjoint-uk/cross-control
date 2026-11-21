@@ -1,6 +1,13 @@
-//! `service unit | install | uninstall`: run the daemon as a systemd user
-//! service, using this binary's own path so the unit is always correct for
-//! wherever it was installed.
+//! `service unit | install | uninstall`: start the daemon at login, using
+//! this binary's own path so the definition is always correct for wherever
+//! it was installed.
+//!
+//! - Linux: a systemd *user* service.
+//! - Windows: a Task Scheduler task that runs at logon, as the user, in
+//!   their desktop session. (A Windows *service* runs in session 0, away
+//!   from the desktop, where it could neither capture nor inject input.)
+//!   The task starts `cross-controlw`, which runs the daemon without a
+//!   console window and restarts it if it fails.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -12,8 +19,9 @@ use crate::exit;
 use crate::{Ctx, ServiceAction};
 
 const UNIT_NAME: &str = "cross-control.service";
+const TASK_NAME: &str = "cross-control";
 
-pub fn run(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<u8> {
+pub async fn run(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<u8> {
     let exe = std::env::current_exe()?;
     // Absolute, so the unit works whatever directory systemd starts it in.
     let config = ctx
@@ -29,6 +37,9 @@ pub fn run(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<u8> {
             Some((var, value))
         })
         .collect();
+    if cfg!(windows) {
+        return windows_task(ctx, action, &exe, config.as_deref(), &env).await;
+    }
     let unit = unit_text(&exe, config.as_deref(), &env);
     match action {
         ServiceAction::Unit => {
@@ -165,8 +176,221 @@ fn ensure_linux() -> anyhow::Result<()> {
     if cfg!(target_os = "linux") {
         Ok(())
     } else {
-        anyhow::bail!("service management is only implemented for systemd on Linux so far")
+        anyhow::bail!("service management is implemented for Linux (systemd) and Windows only")
     }
+}
+
+/// `service` on Windows: the logon task.
+async fn windows_task(
+    ctx: &Ctx,
+    action: ServiceAction,
+    exe: &Path,
+    config: Option<&Path>,
+    env: &[(&str, String)],
+) -> anyhow::Result<u8> {
+    let launcher = exe.with_file_name(format!("cross-controlw{}", std::env::consts::EXE_SUFFIX));
+    let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
+        (Ok(domain), Ok(name)) if !domain.is_empty() => format!("{domain}\\{name}"),
+        (_, Ok(name)) => name,
+        _ => anyhow::bail!("cannot tell the current user (USERNAME is not set)"),
+    };
+    let xml = task_xml(&launcher, config, env, &user);
+    let path = setup::config_dir().join("cross-control-task.xml");
+
+    match action {
+        ServiceAction::Unit => {
+            if ctx.json {
+                Ctx::print_json(&json!({ "name": TASK_NAME, "task": xml }));
+            } else {
+                print!("{xml}");
+            }
+            Ok(exit::OK)
+        }
+        ServiceAction::Install { enable } => {
+            if !launcher.exists() {
+                anyhow::bail!(
+                    "{} not found: install it next to {}",
+                    launcher.display(),
+                    exe.display()
+                );
+            }
+            let bytes = utf16_with_bom(&xml);
+            let registered = schtasks(&["/Query", "/TN", TASK_NAME]).is_ok();
+            let changed = !registered || std::fs::read(&path).ok().as_deref() != Some(&bytes[..]);
+            if changed {
+                setup::write_private_file(&path, &bytes)?;
+                let file = path.to_string_lossy();
+                schtasks(&["/Create", "/TN", TASK_NAME, "/XML", &file, "/F"])?;
+            }
+            if enable {
+                schtasks(&["/Run", "/TN", TASK_NAME])?;
+            }
+            if ctx.json {
+                Ctx::print_json(&json!({
+                    "changed": changed, "task": TASK_NAME, "path": path, "enabled": enable
+                }));
+            } else if changed {
+                println!("Registered the logon task \"{TASK_NAME}\".");
+                if !enable {
+                    println!("It starts at your next logon; to start it now: schtasks /Run /TN {TASK_NAME}");
+                }
+            } else {
+                println!("The logon task \"{TASK_NAME}\" is up to date.");
+            }
+            Ok(exit::OK)
+        }
+        ServiceAction::Uninstall => {
+            let registered = schtasks(&["/Query", "/TN", TASK_NAME]).is_ok();
+            // Stop the daemon cleanly first; `cross-controlw` then exits too.
+            let endpoint = cross_control_daemon::control::Endpoint::current();
+            let request = cross_control_daemon::control::Request::Stop;
+            let _ = cross_control_daemon::control::request(&endpoint, request).await;
+            if registered {
+                let _ = schtasks(&["/End", "/TN", TASK_NAME]);
+                schtasks(&["/Delete", "/TN", TASK_NAME, "/F"])?;
+            }
+            let _ = std::fs::remove_file(&path);
+            if ctx.json {
+                Ctx::print_json(&json!({ "changed": registered, "task": TASK_NAME }));
+            } else if registered {
+                println!("Removed the logon task \"{TASK_NAME}\".");
+            } else {
+                println!("The logon task \"{TASK_NAME}\" is not installed.");
+            }
+            Ok(exit::OK)
+        }
+    }
+}
+
+fn schtasks(args: &[&str]) -> anyhow::Result<()> {
+    let output = std::process::Command::new("schtasks")
+        .args(args)
+        .output()
+        .map_err(|e| anyhow::anyhow!("cannot run schtasks: {e}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "`schtasks {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// The Task Scheduler definition: at `user`'s logon, run the launcher in
+/// their session, with no time limit and no idle/battery conditions.
+pub fn task_xml(
+    launcher: &Path,
+    config: Option<&Path>,
+    env: &[(&str, String)],
+    user: &str,
+) -> String {
+    let mut args: Vec<String> = Vec::new();
+    for (var, value) in env {
+        args.push("--env".to_string());
+        args.push(windows_quote(&format!("{var}={value}")));
+    }
+    if let Some(config) = config {
+        args.push("--config".to_string());
+        args.push(windows_quote(&config.to_string_lossy()));
+    }
+    let user = xml_escape(user);
+    let command = xml_escape(&launcher.to_string_lossy());
+    let arguments = xml_escape(&args.join(" "));
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<!-- Generated by `cross-control service install`; regenerate rather than edit. -->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>cross-control virtual KVM daemon</Description>
+    <URI>\{TASK_NAME}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#
+    )
+}
+
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Quote one argument the way Windows programs split their command line
+/// (`CommandLineToArgvW`): quotes only when needed, with backslashes
+/// doubled before a quote.
+pub fn windows_quote(arg: &str) -> String {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
+        return arg.to_string();
+    }
+    let mut out = String::from("\"");
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.push_str(&"\\".repeat(backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.push_str(&"\\".repeat(backslashes * 2));
+    out.push('"');
+    out
+}
+
+/// Task Scheduler reads task files as UTF-16.
+fn utf16_with_bom(text: &str) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xFE];
+    for unit in text.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    bytes
 }
 
 #[cfg(test)]
@@ -186,6 +410,46 @@ mod tests {
         ));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Environment=\"CROSS_CONTROL_CONFIG_DIR=/srv/cc dir\"\n"));
+    }
+
+    #[test]
+    fn windows_arguments_are_quoted_for_commandlinetoargvw() {
+        assert_eq!(windows_quote("plain"), "plain");
+        assert_eq!(windows_quote(""), "\"\"");
+        assert_eq!(
+            windows_quote(r"C:\cc dir\config.toml"),
+            r#""C:\cc dir\config.toml""#
+        );
+        assert_eq!(windows_quote(r"C:\cc dir\"), r#""C:\cc dir\\""#);
+        assert_eq!(windows_quote(r#"say "hi""#), r#""say \"hi\"""#);
+    }
+
+    #[test]
+    fn task_runs_the_launcher_at_logon_in_the_users_session() {
+        let xml = task_xml(
+            Path::new(r"C:\Program Files\cross-control\cross-controlw.exe"),
+            Some(Path::new(r"C:\Users\a&b\config.toml")),
+            &[("CROSS_CONTROL_CONFIG_DIR", r"D:\cc dir".to_string())],
+            r"PC\alice",
+        );
+        assert!(
+            xml.contains("<Command>C:\\Program Files\\cross-control\\cross-controlw.exe</Command>")
+        );
+        assert!(xml.contains(
+            "<Arguments>--env &quot;CROSS_CONTROL_CONFIG_DIR=D:\\cc dir&quot; \
+             --config C:\\Users\\a&amp;b\\config.toml</Arguments>"
+        ));
+        assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(xml.contains("<UserId>PC\\alice</UserId>"));
+        assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+    }
+
+    #[test]
+    fn task_file_is_utf16_with_a_bom() {
+        assert_eq!(
+            utf16_with_bom("<a/>"),
+            [0xFF, 0xFE, b'<', 0, b'a', 0, b'/', 0, b'>', 0]
+        );
     }
 
     #[test]

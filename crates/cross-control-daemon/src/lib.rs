@@ -1,9 +1,10 @@
 //! Core daemon for cross-control.
 //!
 //! Implements the state machine for barrier logic, event routing, session
-//! management, and IPC server for the CLI to communicate with.
+//! management, and the local control channel the CLI talks to.
 
 pub mod config;
+pub mod control;
 pub mod daemon;
 pub mod error;
 pub mod session;
