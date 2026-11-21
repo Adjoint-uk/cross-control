@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-certgen"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "rcgen",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-clipboard"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cross-control-certgen",
@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-discovery"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-input"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-tui-test"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cross-control-certgen",
  "cross-control-daemon",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "cross-control-types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bincode",
  "serde",
