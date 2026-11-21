@@ -1,8 +1,9 @@
 //! Platform-abstracted input capture and emulation for cross-control.
 //!
 //! This crate defines the [`InputCapture`] and [`InputEmulation`] traits that
-//! platform-specific backends must implement. The evdev/uinput (Linux) and
-//! Raw Input/SendInput (Windows) backends will be added in later phases.
+//! platform-specific backends implement: evdev/uinput on Linux, low-level
+//! hooks and `SendInput` on Windows, and Quartz event taps and event posting
+//! on macOS.
 
 use async_trait::async_trait;
 use cross_control_types::{
@@ -18,6 +19,9 @@ pub mod linux;
 #[cfg(all(feature = "windows", windows))]
 pub mod windows;
 
+#[cfg(all(feature = "macos", target_os = "macos"))]
+pub mod macos;
+
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 
@@ -27,6 +31,11 @@ pub mod null;
 // every platform.
 #[cfg(any(test, all(feature = "windows", windows)))]
 pub(crate) mod win32_map;
+
+// Pure macOS input translation; compiled everywhere so it is tested on
+// every platform.
+#[cfg(any(test, all(feature = "macos", target_os = "macos")))]
+pub(crate) mod mac_map;
 
 pub use error::InputError;
 

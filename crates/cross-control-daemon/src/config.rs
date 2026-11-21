@@ -269,13 +269,15 @@ impl Default for InputConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InputBackend {
-    /// The platform's native backend (evdev/uinput on Linux).
+    /// The platform's native backend.
     #[default]
     Auto,
     /// evdev capture and uinput emulation (Linux).
     Evdev,
     /// Low-level hooks and `SendInput` (Windows).
     Windows,
+    /// Quartz event taps and event posting (macOS).
+    Macos,
     /// Touch no input devices: the daemon still connects, authenticates and
     /// syncs the clipboard, but neither shares nor receives keyboard and
     /// mouse. For smoke-testing deployments (containers, CI) and headless

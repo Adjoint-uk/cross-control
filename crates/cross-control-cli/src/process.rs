@@ -11,14 +11,24 @@ pub fn is_alive(pid: u32) -> bool {
             .and_then(|(_, rest)| rest.trim_start().chars().next());
         return state.is_some_and(|s| s != 'Z' && s != 'X');
     }
-    // No procfs (e.g. macOS): signal 0 checks existence (and permission)
-    // without sending anything.
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
+    alive_via_ps(pid)
+}
+
+/// Without procfs (e.g. macOS): ask ps for the process state. It fails when
+/// there is no such process; a "Z" state is a zombie.
+#[cfg(unix)]
+fn alive_via_ps(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
         .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+        .output()
+        .is_ok_and(|out| {
+            out.status.success() && {
+                let state = String::from_utf8_lossy(&out.stdout);
+                let state = state.trim();
+                !state.is_empty() && !state.starts_with('Z')
+            }
+        })
 }
 
 #[cfg(windows)]
@@ -77,5 +87,18 @@ mod tests {
         let pid = child.id();
         child.wait().unwrap();
         assert!(!is_alive(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ps_fallback_sees_live_processes_and_not_zombies() {
+        assert!(alive_via_ps(std::process::id()));
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        // Exited but not yet reaped: a zombie.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!alive_via_ps(pid), "a zombie counted as alive");
+        child.wait().unwrap();
+        assert!(!alive_via_ps(pid));
     }
 }

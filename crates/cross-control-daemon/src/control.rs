@@ -232,6 +232,18 @@ mod platform {
         events: tokio::sync::mpsc::Sender<DaemonEvent>,
     ) -> std::io::Result<JoinHandle<()>> {
         let path = Path::new(&endpoint.0);
+        // sun_path holds 104 bytes on macOS and 108 on Linux, NUL included.
+        if endpoint.0.len() >= 104 {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "control socket path is too long for the OS ({} bytes): {}; \
+                     set CROSS_CONTROL_RUNTIME_DIR to a shorter directory",
+                    endpoint.0.len(),
+                    path.display()
+                ),
+            ));
+        }
         if let Some(dir) = path.parent() {
             crate::setup::create_private_dir(dir)?;
         }

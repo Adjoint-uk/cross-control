@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — macOS input backend (preview)
+
+- **Native macOS backend** (`[input] backend = "auto"` or `"macos"`):
+  - capture uses a Quartz event tap on its own run-loop thread, swallowing local input while you control another machine. The cursor is detached from the mouse then, so motion keeps arriving as deltas; when you control this Mac, the real cursor position is reported, for exact edge crossing.
+  - emulation uses `CGEventPost` with layout-independent virtual key codes. Held modifiers' flags go on every event, motion with a button held is sent as "dragged", double clicks are counted, and smooth scrolling keeps its fractional deltas.
+  - events the daemon posts carry a marker its own tap ignores, so being controlled never echoes back. A tap that macOS disables (after a slow callback or secure input) is re-enabled.
+- **Keymap** (`mac_map`): pure code, unit-tested on every platform. It covers every named key, PC-only keys (Insert as Help, Num Lock as Clear, Print Screen / Scroll Lock / Pause as F13–F15), left/right modifier flags, buttons and scroll signs.
+- **`doctor` on macOS** reports the Input Monitoring and Accessibility permissions, with the exact System Settings path to fix them. The first start shows the system prompts.
+- **CI builds and tests on macOS.** Tests that need the desktop skip when the runner lacks the permissions.
+- **[docs/macos.md](docs/macos.md)** covers how it works, permissions, setup and limits.
+
+### Fixed
+
+- **`stop` could wait for a daemon that had already exited, on systems without `/proc` (macOS).** A zombie (an exited child not yet reaped) counted as running there; the check now uses `ps` and ignores zombies.
+- **A too-long control-socket path now gives a clear error.** macOS limits Unix socket paths to 104 bytes, and its temp directory is long. The error suggests a shorter `CROSS_CONTROL_RUNTIME_DIR`.
+
 ### Added
 
 - **Releases can be published from the Actions tab.** Run the Release workflow on `main` with "publish" ticked; it creates the `vX.Y.Z` tag for the version in the code. This suits environments that cannot push tags.
