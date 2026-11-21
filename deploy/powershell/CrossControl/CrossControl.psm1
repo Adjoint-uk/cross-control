@@ -266,7 +266,7 @@ function Set-CrossControlConfig {
         [int]$Port = 24800,
         [string]$Bind = '0.0.0.0',
         [bool]$Discovery = $true,
-        [ValidateSet('auto', 'evdev', 'windows', 'none')]
+        [ValidateSet('auto', 'evdev', 'windows', 'macos', 'none')]
         [string]$InputBackend = 'auto',
         [string[]]$ReleaseHotkey = @('LeftCtrl', 'LeftShift', 'Escape'),
         [bool]$TrustOnFirstUse = $false,

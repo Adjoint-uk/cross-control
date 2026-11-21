@@ -20,9 +20,10 @@ path = "src/bin/cross-controlw.rs"
 
 [features]
 # Each native backend only takes effect on its own platform.
-default = ["linux", "windows"]
+default = ["linux", "windows", "macos"]
 linux = ["cross-control-daemon/linux"]
 windows = ["cross-control-daemon/windows"]
+macos = ["cross-control-daemon/macos"]
 
 [dependencies]
 cross-control-daemon = { workspace = true }

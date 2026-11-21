@@ -5,7 +5,9 @@ use cross_control_daemon::DaemonEvent;
 use tokio::sync::mpsc;
 
 fn scratch_endpoint() -> Endpoint {
-    let dir = std::env::temp_dir().join(format!("cc-ctl-{}", uuid::Uuid::new_v4().simple()));
+    // Short: macOS limits socket paths to 104 bytes, and its temp dir is long.
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let dir = std::env::temp_dir().join(format!("cc{}", &id[..8]));
     Endpoint::for_runtime_dir(&dir)
 }
 

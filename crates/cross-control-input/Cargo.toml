@@ -15,7 +15,9 @@ linux = ["dep:evdev"]
 mock = []
 # Native Windows backend (low-level hooks/SendInput). No effect elsewhere.
 windows = ["dep:windows-sys"]
-# Tests only: lets the Windows hooks accept synthetic input tagged with a
+# Native macOS backend (Quartz event taps/event posting). No effect elsewhere.
+macos = ["dep:core-graphics", "dep:core-foundation"]
+# Tests only: lets the Windows hooks and macOS event tap accept synthetic input tagged with a
 # marker, so end-to-end tests can drive real capture. Never enable in
 # release builds.
 test-support = []
@@ -36,3 +38,7 @@ evdev = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { workspace = true, optional = true }
+core-foundation = { workspace = true, optional = true }

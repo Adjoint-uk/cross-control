@@ -11,13 +11,16 @@ struct Home(PathBuf);
 
 impl Home {
     fn new(tag: &str) -> Self {
+        // Short: the control socket lives under it, and macOS limits socket
+        // paths to 104 bytes (its temp dir alone is ~50).
+        let tag: String = tag.chars().take(4).collect();
         let dir = std::env::temp_dir().join(format!(
-            "cc-auto-{tag}-{}-{}",
+            "cc{tag}{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .subsec_nanos()
         ));
         std::fs::create_dir_all(dir.join("config")).unwrap();
         std::fs::create_dir_all(dir.join("run")).unwrap();

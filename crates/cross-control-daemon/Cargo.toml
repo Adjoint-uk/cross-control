@@ -12,6 +12,7 @@ authors.workspace = true
 [features]
 linux = ["cross-control-input/linux"]
 windows = ["cross-control-input/windows"]
+macos = ["cross-control-input/macos"]
 mock = ["cross-control-input/mock"]
 
 [dependencies]
@@ -34,7 +35,7 @@ hostname = "0.4"
 
 [dev-dependencies]
 toml = { workspace = true }
-cross-control-input = { workspace = true, features = ["mock", "windows", "test-support"] }
+cross-control-input = { workspace = true, features = ["mock", "windows", "macos", "test-support"] }
 cross-control-clipboard = { workspace = true, features = ["mock"] }
 cross-control-certgen = { workspace = true }
 cross-control-protocol = { workspace = true }

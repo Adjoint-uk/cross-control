@@ -106,6 +106,9 @@ fn input_backends(backend: InputBackend) -> anyhow::Result<Backends> {
             native_backends()
         }
         InputBackend::Windows if cfg!(all(feature = "windows", windows)) => native_backends(),
+        InputBackend::Macos if cfg!(all(feature = "macos", target_os = "macos")) => {
+            native_backends()
+        }
         other => Err(cross_control_daemon::DaemonError::Config(format!(
             "input backend {other:?} is not available on this platform"
         ))
@@ -144,9 +147,22 @@ fn native_backends() -> anyhow::Result<Backends> {
     ))
 }
 
+#[cfg(all(feature = "macos", target_os = "macos"))]
+#[allow(clippy::unnecessary_wraps)] // same signature as the fallible fallback
+fn native_backends() -> anyhow::Result<Backends> {
+    use cross_control_input::macos::{capture::MacCapture, devices, emulation::MacEmulation};
+
+    Ok((
+        Box::new(MacCapture::new()),
+        Box::new(MacEmulation::new()),
+        devices(),
+    ))
+}
+
 #[cfg(not(any(
     all(feature = "linux", target_os = "linux"),
-    all(feature = "windows", windows)
+    all(feature = "windows", windows),
+    all(feature = "macos", target_os = "macos")
 )))]
 fn native_backends() -> anyhow::Result<Backends> {
     Err(cross_control_daemon::DaemonError::Config(

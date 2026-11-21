@@ -89,6 +89,9 @@ jobs:
           - os: windows-latest
             build-args: "--workspace"
             test-args: "--workspace"
+          - os: macos-latest
+            build-args: "--workspace"
+            test-args: "--workspace"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -99,6 +102,9 @@ jobs:
           # The Windows runner has an interactive desktop: tests that need
           # one must run there, not skip.
           CROSS_CONTROL_REQUIRE_DESKTOP: ${{ matrix.os == 'windows-latest' && '1' || '' }}
+      - name: macOS permissions (desktop tests skip without them)
+        if: matrix.os == 'macos-latest'
+        run: target/debug/cross-control doctor || true
       - name: Logon task end-to-end
         if: matrix.os == 'windows-latest'
         shell: pwsh

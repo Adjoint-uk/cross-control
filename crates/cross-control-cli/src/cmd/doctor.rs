@@ -337,9 +337,43 @@ fn native_input_checks() -> Vec<Check> {
     ]
 }
 
+#[cfg(all(feature = "macos", target_os = "macos"))]
+fn native_input_checks() -> Vec<Check> {
+    let have = cross_control_input::macos::permissions();
+    let settings = "System Settings → Privacy & Security";
+    let exe = std::env::current_exe()
+        .map_or_else(|_| "cross-control".to_string(), |p| p.display().to_string());
+    let mut checks = Vec::new();
+    checks.push(if have.listen {
+        Check::ok("input", "Input Monitoring granted (capture)")
+    } else {
+        Check::fail(
+            "input",
+            "no Input Monitoring permission: keyboard and mouse cannot be captured",
+            format!("{settings} → Input Monitoring: add and enable {exe}\n(the first `cross-control start` also shows the prompt)"),
+        )
+    });
+    checks.push(if have.post {
+        Check::ok("input", "Accessibility granted (control and grab)")
+    } else {
+        Check::fail(
+            "input",
+            "no Accessibility permission: input cannot be injected or grabbed",
+            format!("{settings} → Accessibility: add and enable {exe}"),
+        )
+    });
+    checks.push(Check::warn(
+        "input",
+        "input cannot reach the login window or secure text fields (password prompts)",
+        "this is a macOS protection that applies to every event tap",
+    ));
+    checks
+}
+
 #[cfg(not(any(
     all(feature = "linux", target_os = "linux"),
-    all(feature = "windows", windows)
+    all(feature = "windows", windows),
+    all(feature = "macos", target_os = "macos")
 )))]
 fn native_input_checks() -> Vec<Check> {
     vec![Check::fail(

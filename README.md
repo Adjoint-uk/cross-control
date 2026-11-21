@@ -1,6 +1,6 @@
 # cross-control
 
-> **Status: `0.2.0-alpha` — Phase 1 close-out.** Two daemons on the same LAN discover each other via mDNS and the cursor crosses between machines — no static IP in the config required. Clipboard sync, multi-monitor, and Windows support are next (see [`DESIGN.md`](DESIGN.md) and the [issues](https://github.com/Adjoint-uk/cross-control/issues)). Not yet a daily driver, but the core KVM works end-to-end on Linux.
+> **Status: `0.2.0`.** The core KVM works end to end on Linux, with Windows and macOS as previews. Downloads for Linux and Windows are on the [releases page](https://github.com/Adjoint-uk/cross-control/releases). It is pre-1.0, so the wire protocol can still change between minor versions: upgrade every machine together.
 
 **Share your keyboard and mouse across machines.** A modern, Rust-based virtual KVM that lets you seamlessly move your cursor between computers on the same network.
 
@@ -21,6 +21,7 @@ cross-control takes a different approach:
 | **Active** | Dead (2022) | Slow | Yes | Yes | Yes | **Yes** |
 | **Wayland** | No | Partial | Partial | Yes | Yes | **Native** |
 | **Windows** | Yes | Yes | Yes | No | Yes | **Preview** |
+| **macOS** | Yes | Yes | Yes | No | Yes | **Preview** |
 | **Protocol** | Synergy v1 | Synergy v1 | Proprietary | Custom | Custom | **QUIC** |
 | **Encryption** | Optional TLS | Optional TLS | TLS | TLS | None | **TLS 1.3 (always)** |
 | **Discovery** | No | No | No | No | No | **mDNS** |
@@ -40,7 +41,8 @@ cross-control takes a different approach:
 ## Requirements
 
 - **Linux** (x86_64 or aarch64)
-- **Windows** 10/11 — preview: the native backend is built and unit-tested, but not yet validated on real hardware (see [docs/windows.md](docs/windows.md))
+- **Windows** 10/11 — preview: tested end to end on CI's Windows desktop, not yet validated on physical machines (see [docs/windows.md](docs/windows.md))
+- **macOS** 11+ — preview: native backend built and tested on CI's macOS runners; needs the Input Monitoring and Accessibility permissions; build from source for now (see [docs/macos.md](docs/macos.md))
 - **Rust 1.89+** (if building from source)
 - Linux: user in the `input` group to access keyboard/mouse devices
 - Linux: `/dev/uinput` accessible for virtual device emulation
@@ -298,8 +300,8 @@ cross-control is in early development. Current status:
 
 - [x] **Phase 0**: Workspace scaffold, shared types, trait definitions, CI
 - [x] **Phase 1** (`v0.2.0-alpha`): Linux-to-Linux end-to-end — evdev capture, QUIC transport, multi-hop switching, mDNS discovery, certificate pinning, 64 tests
-- [ ] **Phase 2** (`v0.5.0-beta`): Clipboard sharing, multi-monitor, reconnect, polished setup
-- [ ] **Phase 3** (`v0.9.0`): Windows + macOS input backends, distro packaging
+- [x] **Phase 2** (`v0.2.0`): Clipboard sharing, multi-monitor, reconnect, polished setup (`doctor`, start at login, clean stop)
+- [ ] **Phase 3**: Windows backend (preview, shipped in 0.2.0), macOS backend (preview), release downloads with provenance (shipped), real-hardware validation, distro packaging
 - [ ] **Phase 4** (`1.0.0`): Protocol freeze, ADRs, security model, fuzz testing
 
 ## Contributing
