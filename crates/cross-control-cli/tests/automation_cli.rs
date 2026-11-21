@@ -272,8 +272,32 @@ fn daemon_starts_once_and_stops_gracefully() {
     assert_eq!(code, 3);
 }
 
+// macOS gets a launchd agent instead of a systemd unit.
+#[cfg(target_os = "macos")]
+#[test]
+fn service_unit_is_a_launch_agent_running_this_binary_with_config() {
+    let home = Home::new("service");
+    let config = home.write("etc/cc.toml", "[identity]\nname = \"a\"\n");
+    let (code, plist, stderr) = home.run(&["service", "unit", "--config", s(&config)]);
+    assert_eq!(code, 0, "{stderr}");
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_cross-control")).unwrap();
+    assert!(
+        plist.contains("<key>Label</key><string>uk.adjoint.cross-control</string>"),
+        "{plist}"
+    );
+    assert!(
+        plist.contains(&format!("<string>{}</string>", s(&exe))),
+        "{plist}"
+    );
+    assert!(plist.contains("<string>--config</string>"), "{plist}");
+    assert!(
+        plist.contains(s(&std::fs::canonicalize(&config).unwrap())),
+        "{plist}"
+    );
+}
+
 // systemd units are Linux-only.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn service_unit_runs_this_binary_with_config() {
     let home = Home::new("service");
