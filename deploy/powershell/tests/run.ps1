@@ -187,3 +187,5 @@ if ($failures) {
     exit 1
 }
 Write-Host 'CrossControl module: all checks passed'
+
+exit 0
